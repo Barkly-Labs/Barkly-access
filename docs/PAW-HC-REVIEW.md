@@ -1,22 +1,8 @@
-# PAW-HC Review — Barkly Access 0.4 (experimental readable layout)
+# PAW-HC review — Barkly Access Stats prototype
 
-- **Agency and reversibility:** readable layout and Quiet View are independent controls; restore resets both and plugin stop removes its CSS.
-- **Content preservation:** layout styles change spacing and hierarchy only; they do not filter, summarize, or hide messages.
-- **Cognitive load:** more whitespace, bounded text line length, reduced timestamp prominence, and clearer reply/embed styling aim to improve scanning.
-- **Visual identity:** controls and focus indicators use Barkly's black/pink palette.
-- **Accessibility validation:** not a WCAG conformance claim. Test contrast, zoom, keyboard navigation, screen-reader semantics, selector behavior, and user feedback.
-- **Privacy:** no message collection or network calls; preferences remain in BetterDiscord local data.
-- **Platform risk:** client mods may violate Discord's terms and may risk account action.
-
-## Conversation chunk grouping
-
-- Group short message bursts into visual chunks, including messages from different people, rather than making each message a standalone card.
-- Number each chunk as a navigation landmark; keep message content unchanged and in original order.
-- Prototype heuristic: 15-minute time gap. User testing should evaluate whether this grouping window makes sense and should become configurable.
-
-## Frequent people tab (experimental)
-
-- **Transparency:** the tab explains that ranking is based only on messages currently loaded/rendered in the open channel.
-- **Privacy:** names/counts are calculated locally on refresh, are not persisted, and no message content or data is sent externally.
-- **Agency:** tab is optional and does not alter Discord's native member list.
-- **Limitations:** counts are approximate, channel-scoped and dependent on unstable DOM selectors; do not interpret as a measure of relationship quality or overall interaction.
+- **Agency:** opening a conversation starts collection for that conversation only. The dashboard offers per-conversation and all-data deletion.
+- **Privacy:** only message and author metadata is normalized. Bodies and attachments are not read into analytics. Aggregate records and bounded message-ID fingerprints are stored locally.
+- **Coverage honesty:** only rows rendered by Discord are observed. Collection remains partial; the plugin does not fetch or claim complete history.
+- **Direction:** current integration does not access Discord's internal user store, so sent/received direction is marked unknown.
+- **Accessibility:** controls use native buttons, labels, semantic lists and headings, visible focus, text chart summaries, and reduced-motion styling. Manual screen-reader and live-client checks remain outstanding.
+- **Platform risk:** the integration uses unstable Discord DOM selectors and has not been validated in a running client. It uses no private endpoints, tokens, or self-bot behavior.

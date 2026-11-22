@@ -10,7 +10,9 @@ test("build emits a standalone BetterDiscord plugin with metadata and bundled fe
   assert.match(output, /module\.exports/);
   assert.match(output, /AggregationEngine\s*=\s*class/);
   assert.match(output, /normalizeMessages/);
-  assert.match(output, /Choose JSON file/);
+  assert.match(output, /Conversation Stats/);
+  assert.match(output, /rendered-discord-ui/);
+  assert.match(output, /HistoricalStore/);
   assert.match(output, /prefers-reduced-motion/);
   assert.doesNotMatch(output, /require\(["'](?:esbuild|\.\.\/\.\.\/core)/);
   const module = { exports: {} };

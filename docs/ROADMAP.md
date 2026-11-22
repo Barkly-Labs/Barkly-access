@@ -22,4 +22,13 @@
 - [x] Reversible peripheral UI hiding
 - [ ] Contextual thread/reply clarity
 - [ ] User testing with disabled participants
+
+## Historical Stats (prototype)
+- [x] Detect the selected DM/channel from the visible route.
+- [x] Request older rows by scrolling the selected conversation UI.
+- [x] Normalize rendered metadata and persist aggregate statistics locally.
+- [x] Bound duplicate fingerprints; support cancel and clear actions.
+- [x] Show partial coverage honestly and disclose identity limitations.
+- [ ] Validate scroll-container selectors and position restoration in live Discord.
+- [ ] Add a supported full-history source if one becomes available.
 - [ ] Verify keyboard, screen-reader and contrast behavior in client

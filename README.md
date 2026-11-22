@@ -1,57 +1,45 @@
 # Barkly Access
 
-**Cognitive accessibility tools for Discord.** Reduce cognitive load while preserving the features and social experience people value.
+**Accessibility tools for Discord, built around PAW-HC: People Are Worth Designing For.** Barkly Access adds reversible reading controls and locally stored conversation statistics.
 
-> Discord shouldn't require you to remember everything, process everything, and navigate everything just to participate.
+## Features
 
-## Project status
+- Quiet View, readable message spacing, and numbered conversation chunks.
+- Automatic collection when a Discord conversation is opened: Barkly Access scrolls the selected UI to request older rows and counts each rendered batch.
+- Locally persisted counts by author, sent/received/unknown direction, activity by UTC day and hour, Frequent ranking, and historical coverage status.
+- Accessible Stats controls for search, time range, daily/weekly/monthly grouping, contact exclusions, and deletion.
+- Per-conversation and all-analytics clear controls.
 
-Early prototype with an experimental BetterDiscord adapter in `src/integrations/betterdiscord/`. Discord client modifications are unofficial, may violate Discord's Terms, and can carry account risk. The integration is experimental and relies on unstable UI selectors.
+## Collection boundary
 
-## Current experiment: reversible decluttering (0.2.0)
+Barkly Access does not call Discord private APIs or use personal tokens. When a conversation opens, it uses that conversation's visible scroll container to request older rows from Discord's ordinary UI, processes each rendered batch, then attempts to restore the original reading position. The scan stops after 3 unchanged passes or 250 batches and can be cancelled from Stats. Coverage is always marked partial because the UI does not confirm that all historical messages are available. Direction is reported as unknown; this integration avoids Discord's internal user store.
 
-- Floating Barkly Access control panel with independent toggles for focus mode, channel list, member list, server rail and chat header.
-- Restore everything button and `Ctrl+Shift+R` shortcut.
-- `Ctrl+Shift+F` toggles focus mode.
-- Preferences saved locally using BetterDiscord data API.
-- No message-content collection or network calls.
+Discord and BetterDiscord can change their client UI. Selectors and rendered metadata are experimental and may stop working. The client integration has not been validated against a running Discord client in this workspace.
 
-## PAW-HC principles
+## Privacy
 
-1. User control and opt-in defaults.
-2. Preserve context and functionality; hidden areas are reversible.
-3. Don't infer intent, emotions, or urgency.
-4. Minimize data collection and retention.
-5. Respect platform rules and privacy boundaries.
-6. Co-design and test with disabled users.
-7. Features should be modular and individually disableable.
+Processing stays on the device. Raw message bodies are not read or persisted. The store keeps aggregates, author IDs and display labels needed for the dashboard, conversation IDs, and a bounded list of non-cryptographic message-ID fingerprints for duplicate suppression. Fingerprints are local pseudonymous identifiers, not anonymization. The list is limited to 20,000 entries per conversation, so older messages can be counted again after eviction. View preferences and analytics are saved locally through BetterDiscord's Data API. Use **Clear this conversation** or **Clear all analytics** to delete analytics.
 
-## Development
+See [Privacy](docs/PRIVACY.md), [Analytics and collection](docs/ANALYTICS.md), and [Architecture](docs/ARCHITECTURE.md).
 
-Review `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, and `docs/PAW-HC-REVIEW.md`. Prototype assets live in `prototype/`; integrations are isolated under `src/integrations/`.
+## Build, test, install
 
-## Build and install
+Requires Node.js 20 or newer.
 
-The installable BetterDiscord plugin is built from the modular source. You need Node.js 20 or newer (the current LTS release is recommended).
+```sh
+npm install
+npm test
+npm run build
+```
 
-1. Install Node.js from [nodejs.org](https://nodejs.org/) if `node --version` and `npm --version` do not work.
-2. In this repository folder, install dependencies: `npm install`.
-3. Run the automated tests and bundle check: `npm test`.
-4. Build the plugin: `npm run build`.
-5. Find the standalone file at `dist/BarklyAccess.plugin.js`.
-6. In Discord, open **User Settings → BetterDiscord → Plugins → Open Plugins Folder**. Copy `BarklyAccess.plugin.js` into that folder. BetterDiscord’s official [plugin installation guide](https://docs.betterdiscord.app/users/guides/installing-addons) has the current UI steps and [plugin folder paths](https://docs.betterdiscord.app/plugins/introduction/quick-start#plugin-folder).
-7. Return to **BetterDiscord → Plugins** and enable **BarklyAccess**. If Discord does not detect it immediately, use the plugin list's reload control or restart Discord.
+The standalone plugin is generated at `dist/BarklyAccess.plugin.js`. Copy that file into BetterDiscord's Plugins folder using **User Settings → BetterDiscord → Plugins → Open Plugins Folder**, then enable **BarklyAccess**. BetterDiscord's [addon guide](https://docs.betterdiscord.app/users/guides/installing-addons) provides current installation steps.
 
-### Frequent prototype and privacy
+## Limitations
 
-Open the Barkly Access panel and its **Frequent** tab, then choose a local JSON file containing an array of messages or an object with a `messages`, `data`, or `items` array. Each record needs a stable message ID and an author ID (for example `id`/`author.id`, or `message_id`/`author_id`). Display names are optional. Records are normalized in memory; message bodies and attachments are omitted before counting. Frequent retains only ranking totals, duplicate IDs needed for the current scan, and optional author labels in memory. These Frequent values are not written to BetterDiscord storage or sent over the network. The existing view-toggle preferences are saved locally by BetterDiscord. **Clear ranking** and disabling/restarting the plugin discard the Frequent values.
+- Counts represent messages that Discord rendered in the selected conversation during plugin use; full-history completeness cannot be verified.
+- Collection automatically scrolls the selected conversation to load older history and restores the reading position when possible.
+- Sent/received classification is unknown without a safe, supported current-user identity source.
+- The UI adapter relies on unstable Discord DOM selectors.
+- Optional JSON import remains available under Frequent for local testing; it is not required for automatic Stats collection.
 
-The current prototype does not fetch Discord history or call private Discord APIs. It only processes a JSON file you choose. Counts are limited to records included in that file; user names without a stable author ID are not counted. BetterDiscord itself is an unofficial client modification and its continued compatibility is not guaranteed.
-
-## License
-
-MIT — see `LICENSE`.
-
-### Frequent people tab (experimental)
-
-The BetterDiscord adapter includes a local **Frequent** tab that ranks author names in currently rendered messages in the open channel. It is a transient approximate count, not a persisted social ranking. It does not inspect message text or transmit data. See the adapter README for limitations.
+MIT License. See [LICENSE](LICENSE).

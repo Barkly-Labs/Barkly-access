@@ -21,7 +21,7 @@ await build({
   minify: false,
   sourcemap: false,
   banner: {
-    js: `/**\n * @name BarklyAccess\n * @author Barkly Labs\n * @version 0.7.0\n * @description Accessible, privacy-focused Discord controls with a local Frequent import prototype.\n */`,
+    js: `/**\n * @name BarklyAccess\n * @author Barkly Labs\n * @version 0.8.0\n * @description Accessible Discord controls and local conversation analytics.\n */`,
   },
   footer: { js: "module.exports = module.exports.default;" },
 });

@@ -5,8 +5,10 @@
 export function normalizeMessages(sourceMessages, {
   getMessageId = (m) => m.id ?? m.messageId,
   getAuthorId = (m) => m.author?.id ?? m.authorId,
+  getAuthorName = (m) => m.author?.username ?? m.authorName ?? m.username ?? "",
   getConversationId = (m) => m.channel_id ?? m.conversationId ?? m.channelId,
   getTimestamp = (m) => m.timestamp ?? m.createdAt,
+  getIsSelf = (m) => typeof m.isSelf === "boolean" ? m.isSelf : null,
 } = {}) {
   if (!Array.isArray(sourceMessages)) {
     throw new TypeError("sourceMessages must be an array");
@@ -18,15 +20,20 @@ export function normalizeMessages(sourceMessages, {
     const authorId = getAuthorId(m);
     if (messageId == null || authorId == null) return [];
 
+    const rawTimestamp = getTimestamp(m);
+    let numericTimestamp = rawTimestamp == null ? null
+      : typeof rawTimestamp === "number" ? rawTimestamp
+        : Date.parse(rawTimestamp);
+    if (typeof rawTimestamp === "number" && numericTimestamp > 0 && numericTimestamp < 1_000_000_000_000) numericTimestamp *= 1000;
     return [{
       messageId: String(messageId),
       authorId: String(authorId),
+      authorName: String(getAuthorName(m) ?? "").slice(0, 100),
       conversationId: getConversationId(m) == null
         ? null
         : String(getConversationId(m)),
-      timestamp: getTimestamp(m) == null
-        ? null
-        : getTimestamp(m),
+      timestamp: Number.isFinite(numericTimestamp) ? numericTimestamp : null,
+      isSelf: typeof getIsSelf(m) === "boolean" ? getIsSelf(m) : null,
     }];
   });
 }
