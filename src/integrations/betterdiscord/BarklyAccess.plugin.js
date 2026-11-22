@@ -1,15 +1,15 @@
 /**
  * @name BarklyAccess
  * @author Barkly Labs
- * @version 0.3.0
+ * @version 0.5.0
  * @description Reduce competing chat UI elements with a reversible, user-controlled Quiet View.
  */
 module.exports = class BarklyAccess {
   constructor() {
     this.styleId = 'barkly-access-quiet-view';
     this.panelId = 'barkly-access-panel';
-    this.state = { quiet: false, layout: false, showMembers: false, showChannels: false, showToolbar: false };
-    this.classes = { quiet: 'ba-quiet', layout: 'ba-readable-layout', members: 'ba-hide-members', channels: 'ba-hide-channels', toolbar: 'ba-hide-toolbar' };
+    this.state = { quiet: false, layout: false, numbered: false, showMembers: false, showChannels: false, showToolbar: false };
+    this.classes = { quiet: 'ba-quiet', layout: 'ba-readable-layout', numbered: 'ba-numbered-chat', members: 'ba-hide-members', channels: 'ba-hide-channels', toolbar: 'ba-hide-toolbar' };
   }
   start() {
     this.state = Object.assign(this.state, BdApi.Data.load('BarklyAccess', 'state') || {});
@@ -24,11 +24,12 @@ module.exports = class BarklyAccess {
   save(){ BdApi.Data.save('BarklyAccess','state',this.state); }
   toggleQuiet(){ this.state.quiet=!this.state.quiet; this.apply(); this.save(); this.updatePanel(); }
   toggle(key){ this.state[key]=!this.state[key]; this.apply(); this.save(); this.updatePanel(); }
-  restore(){ this.state={quiet:false,layout:false,showMembers:false,showChannels:false,showToolbar:false}; this.apply(); this.save(); this.updatePanel(); BdApi.UI.showToast('Barkly Access · view restored',{type:'success'}); }
+  restore(){ this.state={quiet:false,layout:false,numbered:false,showMembers:false,showChannels:false,showToolbar:false}; this.apply(); this.save(); this.updatePanel(); BdApi.UI.showToast('Barkly Access · view restored',{type:'success'}); }
   apply(){
     const b=document.body;
     b.classList.toggle(this.classes.quiet,!!this.state.quiet);
     b.classList.toggle(this.classes.layout,!!this.state.layout);
+    b.classList.toggle(this.classes.numbered,!!this.state.numbered);
     b.classList.toggle(this.classes.members,!!this.state.quiet && !this.state.showMembers);
     b.classList.toggle(this.classes.channels,!!this.state.quiet && !this.state.showChannels);
     b.classList.toggle(this.classes.toolbar,!!this.state.quiet && !this.state.showToolbar);
@@ -37,14 +38,21 @@ module.exports = class BarklyAccess {
   createPanel(){
     if(document.getElementById(this.panelId)) return;
     const p=document.createElement('aside'); p.id=this.panelId; p.setAttribute('aria-label','Barkly Access');
-    p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span>＋</span></button><div class="ba-options" hidden><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></div>`;
+    p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span>＋</span></button><div class="ba-options" hidden><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Numbered conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></div>`;
     p.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.classList.contains('ba-main')){const d=p.querySelector('.ba-options');d.hidden=!d.hidden;b.setAttribute('aria-expanded',String(!d.hidden));b.querySelector('span').textContent=d.hidden?'＋':'−';return;}const a=b.dataset.action;if(a==='restore')this.restore();else if(a==='quiet')this.toggleQuiet();else if(a)this.toggle(a);});
     document.body.appendChild(p);this.panel=p;this.updatePanel();
   }
-  updatePanel(){ if(!this.panel)return; this.panel.querySelectorAll('[data-action]').forEach(b=>{const k=b.dataset.action;if(k==='restore')return;const on=k==='quiet'?this.state.quiet:this.state[k];b.setAttribute('aria-pressed',String(!!on));b.classList.toggle('ba-on',!!on);const labels={quiet:'Quiet view',layout:'Readable chat layout',showMembers:'Member list',showChannels:'Channel list',showToolbar:'Chat toolbar'};b.textContent=(k==='quiet'||k==='layout')?`${labels[k]} · ${on?'On':'Off'}`:`${labels[k]} · ${on?'Shown':'Hidden'}`;});}
+  updatePanel(){ if(!this.panel)return; this.panel.querySelectorAll('[data-action]').forEach(b=>{const k=b.dataset.action;if(k==='restore')return;const on=k==='quiet'?this.state.quiet:this.state[k];b.setAttribute('aria-pressed',String(!!on));b.classList.toggle('ba-on',!!on);const labels={quiet:'Quiet view',layout:'Readable chat layout',numbered:'Numbered conversation cards',showMembers:'Member list',showChannels:'Channel list',showToolbar:'Chat toolbar'};b.textContent=(k==='quiet'||k==='layout'||k==='numbered')?`${labels[k]} · ${on?'On':'Off'}`:`${labels[k]} · ${on?'Shown':'Hidden'}`;});}
   stop(){document.removeEventListener('keydown',this.onKeyDown,true);Object.values(this.classes).forEach(c=>document.body.classList.remove(c));BdApi.DOM.removeStyle(this.styleId);document.getElementById(this.panelId)?.remove();}
   css(){return `
     /* Readable layout: hierarchy and grouping, without hiding message content. */
+    /* Numbered cards: visual landmarks, using a CSS counter. Experimental selectors. */
+    body.${this.classes.numbered} [class*='scrollerInner'] {counter-reset: barkly-message;}
+    body.${this.classes.numbered} [class*='messageListItem'] {counter-increment: barkly-message; position:relative; margin:10px 12px !important; padding:14px 14px 14px 54px !important; border:1px solid #292929; border-left:3px solid #ff4fa3; border-radius:12px; background:#101010; min-height:56px;}
+    body.${this.classes.numbered} [class*='messageListItem']::before {content:counter(barkly-message); position:absolute; left:12px; top:14px; display:flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:#ff4fa3; color:#090909; font-weight:800; font-size:13px;}
+    body.${this.classes.numbered} [class*='messageListItem']:hover {border-color:#ff8bc5;}
+    body.${this.classes.numbered} [class*='messageContent'] {line-height:1.65; max-width:78ch;}
+    body.${this.classes.numbered} [class*='timestamp'] {opacity:.7; font-size:.82em;}
     body.${this.classes.layout} [class*="messageListItem"] {padding-block:8px !important;}
     body.${this.classes.layout} [class*="messageContent"] {line-height:1.6 !important;max-width:78ch;}
     body.${this.classes.layout} [class*="messageListItem"] [class*="avatar"] {margin-top:3px;}
