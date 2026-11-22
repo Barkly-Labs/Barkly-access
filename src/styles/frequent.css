@@ -1,0 +1,12 @@
+/* Frequent panel: black, pink, and neutral colors with explicit non-color labels. */
+#barkly-access-panel .ba-file-label{display:block;padding:9px 10px;margin:6px 0;background:#ff4fa3;color:#090909;border-radius:8px;font-weight:700;cursor:pointer;text-align:center}
+#barkly-access-panel #ba-frequent-file{display:block;width:100%;padding:7px;margin:6px 0 10px;background:#101010;color:#f1f1f1;border:1px solid #555;border-radius:8px}
+#barkly-access-panel .ba-import-status{color:#eee;background:#181818;border-left:3px solid #ff4fa3;padding:8px;margin:8px 0;font-size:12px}
+#barkly-access-panel .ba-secondary{background:#292929;color:#f1f1f1}
+#barkly-access-panel .ba-frequent-list{list-style:none;padding:0;margin:8px 0;display:grid;gap:6px}
+#barkly-access-panel .ba-frequent-item{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px;background:#101010;border:1px solid #444;border-radius:8px}
+#barkly-access-panel .ba-rank{display:grid;place-items:center;background:#ff4fa3;color:#090909;border-radius:8px;font-weight:800;height:26px}
+#barkly-access-panel .ba-frequent-name{overflow-wrap:anywhere;font-weight:600}
+#barkly-access-panel .ba-frequent-count{color:#eee;font-size:11px;white-space:nowrap}
+#barkly-access-panel .ba-file-label:focus-within,#barkly-access-panel input:focus-visible,#barkly-access-panel button:focus-visible{outline:3px solid #fff;outline-offset:3px}
+@media(prefers-reduced-motion:reduce){#barkly-access-panel *,#barkly-access-panel *::before,#barkly-access-panel *::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}

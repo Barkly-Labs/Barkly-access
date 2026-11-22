@@ -20,6 +20,8 @@ When **Conversation cards** is enabled, the adapter groups a burst of adjacent m
 
 Discord's internal DOM and timestamps are unstable; verify this behavior in the client. The 15-minute boundary is a prototype heuristic.
 
-## Frequent people tab (experimental)
+## Frequent import prototype
 
-The plugin panel now has an **Access** tab and a **Frequent** tab. Frequent ranks up to ten author names by message count among message rows currently rendered in the open channel, using the client DOM at refresh time. It is a temporary, local view—not a persistent contact-ranking history—and does not read message contents, send data, or store counts. Refresh manually or open the tab to recalculate. Internal Discord selectors may break; counts are approximate and limited to loaded/rendered messages.
+The **Frequent** tab accepts a local JSON export as an array or an object with `messages`, `data`, or `items`. Each counted record must contain a stable message ID and author ID. The shared history normalizer discards body and attachment fields; the shared aggregation engine counts per author and skips duplicate IDs within its bounded in-memory deduplication window. Optional display names are shown when available. Counts are ranked, numbered, and announced through a live status region. **Clear ranking** removes aggregate counts, duplicate IDs, and labels; stopping/restarting the plugin also clears them. These values are never persisted or sent elsewhere.
+
+This prototype does not collect messages from Discord automatically and does not access internal Discord APIs or user tokens. The user must select a local JSON file. Counts reflect only valid records in that file. Keep exports private and only import data you are authorized to use.

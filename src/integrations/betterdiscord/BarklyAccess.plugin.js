@@ -1,10 +1,14 @@
 /**
  * @name BarklyAccess
  * @author Barkly Labs
- * @version 0.6.0
- * @description Reduce competing chat UI elements with a reversible, user-controlled Quiet View.
+ * @version 0.7.0
+ * @description Accessible Discord controls and a local, privacy-focused Frequent import prototype.
  */
-module.exports = class BarklyAccess {
+import { AggregationEngine } from '../../core/history/aggregation-engine.js';
+import { normalizeMessages } from '../../core/history/normalizer.js';
+import frequentStyles from '../../styles/frequent.css';
+
+export default class BarklyAccess {
   constructor() {
     this.styleId = 'barkly-access-quiet-view';
     this.panelId = 'barkly-access-panel';
@@ -15,6 +19,8 @@ module.exports = class BarklyAccess {
   }
   start() {
     this.state = Object.assign(this.state, BdApi.Data.load('BarklyAccess', 'state') || {});
+    this.frequentEngine = new AggregationEngine();
+    this.frequentLabels = new Map();
     this.apply(); this.createPanel(); this.groupMessages();
     this.chunkObserver = new MutationObserver(() => this.groupMessages());
     this.chunkObserver.observe(document.querySelector('[class*=scrollerInner]') || document.body, { childList:true, subtree:true });
@@ -42,20 +48,50 @@ module.exports = class BarklyAccess {
   createPanel(){
     if(document.getElementById(this.panelId)) return;
     const p=document.createElement('aside'); p.id=this.panelId; p.setAttribute('aria-label','Barkly Access');
-    p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span>＋</span></button><div class="ba-options" hidden><div class="ba-tabs"><button type="button" data-tab="controls" class="ba-tab-active">Access</button><button type="button" data-tab="frequent">Frequent</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></section><section data-pane="frequent" hidden><p class="ba-summary">Most active people in the messages currently loaded on screen. Counts stay local and refresh as chat changes.</p><button type="button" data-action="refreshFrequent">Refresh list</button><ol class="ba-frequent-list" aria-live="polite"></ol></section></div>`;
-    p.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.tab){p.querySelectorAll('[data-pane]').forEach(x=>x.hidden=x.dataset.pane!==b.dataset.tab);p.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('ba-tab-active',x===b));if(b.dataset.tab==='frequent')this.refreshFrequent();return;}if(b.classList.contains('ba-main')){const d=p.querySelector('.ba-options');d.hidden=!d.hidden;b.setAttribute('aria-expanded',String(!d.hidden));b.querySelector('span').textContent=d.hidden?'＋':'−';return;}const a=b.dataset.action;if(a==='restore')this.restore();else if(a==='refreshFrequent')this.refreshFrequent();else if(a==='quiet')this.toggleQuiet();else if(a)this.toggle(a);});
-    document.body.appendChild(p);this.panel=p;this.updatePanel();this.refreshFrequent();
+    p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span aria-hidden="true">＋</span></button><div class="ba-options" hidden><div class="ba-tabs" role="tablist" aria-label="Barkly Access features"><button type="button" role="tab" aria-selected="true" data-tab="controls" class="ba-tab-active">Access</button><button type="button" role="tab" aria-selected="false" data-tab="frequent">Frequent</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></section><section data-pane="frequent" hidden><p class="ba-summary">Import a local JSON message export. Only author totals and names are held in memory; message text is discarded.</p><label class="ba-file-label" for="ba-frequent-file">Choose JSON file</label><input id="ba-frequent-file" type="file" accept=".json,application/json" aria-label="Import message history JSON file"><button type="button" data-action="clearFrequent" class="ba-secondary">Clear ranking</button><div class="ba-import-status" role="status" aria-live="polite">No file imported.</div><ol class="ba-frequent-list" aria-label="Frequent authors by message count" aria-live="polite"></ol></section></div>`;
+    p.addEventListener('click',e=>{const b=e.target.closest('button[data-action], button[data-tab], button.ba-main');if(!b)return;if(b.dataset.tab){p.querySelectorAll('[data-pane]').forEach(x=>x.hidden=x.dataset.pane!==b.dataset.tab);p.querySelectorAll('[data-tab]').forEach(x=>{const selected=x===b;x.classList.toggle('ba-tab-active',selected);x.setAttribute('aria-selected',String(selected));});return;}if(b.classList.contains('ba-main')){const d=p.querySelector('.ba-options');d.hidden=!d.hidden;b.setAttribute('aria-expanded',String(!d.hidden));b.querySelector('span').textContent=d.hidden?'＋':'−';return;}const a=b.dataset.action;if(a==='restore')this.restore();else if(a==='clearFrequent')this.clearFrequent();else if(a==='quiet')this.toggleQuiet();else if(a)this.toggle(a);});
+    p.querySelector('#ba-frequent-file').addEventListener('change',e=>this.importFrequentFile(e));
+    document.body.appendChild(p);this.panel=p;this.updatePanel();
   }
   refreshFrequent(){
     if(!this.panel)return; const list=this.panel.querySelector('.ba-frequent-list'); if(!list)return; list.replaceChildren();
-    const root=document.querySelector('[class*=scrollerInner]'); const nodes=root?[...root.querySelectorAll('[class*=messageListItem]')]:[]; const counts=new Map();
-    nodes.forEach(n=>{const author=n.querySelector('[class*=username]');const name=(author?.textContent||'').trim();if(!name)return;counts.set(name,(counts.get(name)||0)+1);});
-    const sorted=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,10);
-    if(!sorted.length){const li=document.createElement('li');li.textContent='No visible messages to count yet.';list.appendChild(li);return;}
-    sorted.forEach(([name,count],i)=>{const li=document.createElement('li');li.className='ba-frequent-item';const rank=document.createElement('span');rank.className='ba-rank';rank.textContent=String(i+1);const label=document.createElement('span');label.className='ba-frequent-name';label.textContent=name;const amount=document.createElement('span');amount.className='ba-frequent-count';amount.textContent=`${count} loaded`;li.append(rank,label,amount);list.appendChild(li);});
+    const ranking=this.frequentEngine.getRanking().slice(0,100);
+    if(!ranking.length){const li=document.createElement('li');li.textContent='No ranking yet. Import a JSON file to begin.';list.appendChild(li);return;}
+    ranking.forEach(({rank,userId,count})=>{const li=document.createElement('li');li.className='ba-frequent-item';const rankLabel=document.createElement('span');rankLabel.className='ba-rank';rankLabel.setAttribute('aria-label',`Rank ${rank}`);rankLabel.textContent=String(rank);const label=document.createElement('span');label.className='ba-frequent-name';label.textContent=this.frequentLabels.get(userId)||userId;const amount=document.createElement('span');amount.className='ba-frequent-count';amount.textContent=`${count.toLocaleString()} messages`;li.append(rankLabel,label,amount);list.appendChild(li);});
   }
-  updatePanel(){ if(!this.panel)return; this.panel.querySelectorAll('[data-action]').forEach(b=>{const k=b.dataset.action;if(k==='restore')return;const on=k==='quiet'?this.state.quiet:this.state[k];b.setAttribute('aria-pressed',String(!!on));b.classList.toggle('ba-on',!!on);const labels={quiet:'Quiet view',layout:'Readable chat layout',numbered:'Conversation cards',showMembers:'Member list',showChannels:'Channel list',showToolbar:'Chat toolbar'};b.textContent=(k==='quiet'||k==='layout'||k==='numbered')?`${labels[k]} · ${on?'On':'Off'}`:`${labels[k]} · ${on?'Shown':'Hidden'}`;});}
-  stop(){document.removeEventListener('keydown',this.onKeyDown,true);this.chunkObserver?.disconnect();document.querySelectorAll('[class*=messageListItem]').forEach(n=>this.chunkClasses.forEach(c=>n.classList.remove(c)));Object.values(this.classes).forEach(c=>document.body.classList.remove(c));BdApi.DOM.removeStyle(this.styleId);document.getElementById(this.panelId)?.remove();}
+  extractMessages(data){
+    if(Array.isArray(data))return data;
+    if(data&&typeof data==='object'){
+      if(Array.isArray(data.messages))return data.messages;
+      if(Array.isArray(data.data))return data.data;
+      if(Array.isArray(data.items))return data.items;
+    }
+    throw new Error('Choose a JSON array or an object containing a messages array.');
+  }
+  async importFrequentFile(event){
+    const file=event.target.files?.[0];if(!file)return;
+    const status=this.panel.querySelector('.ba-import-status');
+    try{
+      const parsed=JSON.parse(await file.text());
+      const records=this.extractMessages(parsed);
+      const normalized=normalizeMessages(records,{
+        getMessageId:m=>m.id??m.messageId??m.message_id,
+        getAuthorId:m=>m.author?.id??m.authorId??m.author_id??m.user_id??m.userId??(typeof m.author==='string'?m.author:null),
+        getConversationId:m=>m.channel_id??m.conversationId??m.channelId??m.channel,
+        getTimestamp:m=>m.timestamp??m.createdAt??m.created_at,
+      });
+      const labels=new Map();
+      records.forEach(m=>{if(!m||typeof m!=='object')return;const id=m.author?.id??m.authorId??m.author_id??m.user_id??m.userId??(typeof m.author==='string'?m.author:null);const label=m.author?.username??m.author?.name??m.authorName??m.username??m.name??m.author;if(id!=null&&typeof label==='string'&&label.trim())labels.set(String(id),label.trim());});
+      const engine=new AggregationEngine();engine.processBatch(normalized);
+      this.frequentEngine=engine;this.frequentLabels=labels;this.refreshFrequent();
+      status.textContent=`Imported ${normalized.length.toLocaleString()} valid records. Message text was discarded.`;
+      // Drop references to raw records as soon as the count-only pass completes.
+    }catch(error){status.textContent=error instanceof SyntaxError?'Could not read that JSON file. Check that it contains valid JSON.':error.message||'Could not import this file.';}
+    finally{event.target.value='';}
+  }
+  clearFrequent(){this.frequentEngine.reset();this.frequentLabels.clear();this.panel.querySelector('.ba-import-status').textContent='Ranking cleared. No message data is retained.';this.refreshFrequent();}
+  updatePanel(){ if(!this.panel)return; this.panel.querySelectorAll('[data-action]').forEach(b=>{const k=b.dataset.action;if(k==='restore'||k==='clearFrequent')return;const on=k==='quiet'?this.state.quiet:this.state[k];b.setAttribute('aria-pressed',String(!!on));b.classList.toggle('ba-on',!!on);const labels={quiet:'Quiet view',layout:'Readable chat layout',numbered:'Conversation cards',showMembers:'Member list',showChannels:'Channel list',showToolbar:'Chat toolbar'};b.textContent=(k==='quiet'||k==='layout'||k==='numbered')?`${labels[k]} · ${on?'On':'Off'}`:`${labels[k]} · ${on?'Shown':'Hidden'}`;});}
+  stop(){document.removeEventListener('keydown',this.onKeyDown,true);this.chunkObserver?.disconnect();document.querySelectorAll('[class*=messageListItem]').forEach(n=>this.chunkClasses.forEach(c=>n.classList.remove(c)));Object.values(this.classes).forEach(c=>document.body.classList.remove(c));BdApi.DOM.removeStyle(this.styleId);document.getElementById(this.panelId)?.remove();this.frequentEngine?.reset();this.frequentLabels?.clear();}
   groupMessages(){
     const root=document.querySelector('[class*=scrollerInner]'); if(!root)return;
     const nodes=[...root.querySelectorAll('[class*=messageListItem]')]; if(!nodes.length)return;
@@ -64,7 +100,7 @@ module.exports = class BarklyAccess {
     const finish=()=>{if(!members.length)return;members.forEach((n,i)=>{this.chunkClasses.forEach(c=>n.classList.remove(c));n.classList.add(members.length===1?'ba-chunk-single':i===0?'ba-chunk-start':i===members.length-1?'ba-chunk-end':'ba-chunk-middle');});members=[];};
     nodes.forEach(n=>{const t=readTime(n);const gap=(t!==null&&prevTime!==null)?t-prevTime:null;const split=!prevNode||gap===null||gap<0||gap>15*60*1000;if(split){finish();group++;}members.push(n);prevNode=n;prevTime=t;});finish();
   }
-  css(){return `
+  css(){return `${frequentStyles}
     /* Numbered conversation chunks: group nearby messages into a cohesive unit. */
     body.${this.classes.numbered} [class*='scrollerInner'] {counter-reset:barkly-chunk;}
     body.${this.classes.numbered} [class*='messageListItem'] {position:relative; margin:0 12px !important; padding:12px 18px 12px 62px !important; background:#101010; border-left:3px solid #ff4fa3; border-right:1px solid #292929; min-height:64px; box-shadow:none;}
