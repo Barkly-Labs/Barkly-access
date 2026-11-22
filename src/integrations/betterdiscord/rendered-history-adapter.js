@@ -6,14 +6,17 @@ import { getConversationHref } from "./conversation-selection.js";
  */
 export function extractRenderedAuthor(row) {
   if (!row) return null;
-  const direct = row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id")
-    || row.querySelector?.('[data-user-id]')?.getAttribute?.("data-user-id")
-    || row.querySelector?.('[data-author-id]')?.getAttribute?.("data-author-id")
-    || null;
-  const href = row.querySelector?.('a[href*="/users/"]')?.getAttribute?.("href")
-    || row.querySelector?.('[href*="/users/"]')?.getAttribute?.("href")
-    || "";
-  const avatar = row.querySelector?.('img[src*="/avatars/"]')?.getAttribute?.("src") || "";
+  const nameNode = row.querySelector?.('[class*="username"]') || null;
+  const header = row.querySelector?.('[class*="header"]') || nameNode?.parentElement?.parentElement || null;
+  const identityNode = nameNode?.closest?.('[data-user-id], [data-author-id]')
+    || header?.querySelector?.('[data-user-id], [data-author-id]') || row;
+  const direct = identityNode?.getAttribute?.("data-user-id") || identityNode?.getAttribute?.("data-author-id")
+    || row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id") || null;
+  const authorLink = nameNode?.closest?.('a[href*="/users/"]')
+    || header?.querySelector?.('a[href*="/users/"]') || null;
+  const href = authorLink?.getAttribute?.("href") || "";
+  const avatar = header?.querySelector?.('img[src*="/avatars/"]')?.getAttribute?.("src")
+    || row.querySelector?.('[class*="avatar"] img[src*="/avatars/"], img[class*="avatar"][src*="/avatars/"]')?.getAttribute?.("src") || "";
   const fromHref = href.match(/\/users\/(\d{5,})/)?.[1] || null;
   const directId = /^\d{5,}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
   // Avatar URLs can be stale, proxied, or belong to a decoration. They are

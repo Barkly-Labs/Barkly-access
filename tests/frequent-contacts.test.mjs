@@ -11,36 +11,50 @@ const time = (day) => Date.UTC(2026, 0, day);
 function contactSnapshot() {
   return { conversations: {
     "100": { conversationId: "100", navigationPath: "/channels/@me/100", status: "partial", people: {
-      "u1": { name: "Zee", username: "zee", total: 3, sent: 0, received: 0, unknown: 3, lastTimestamp: time(3) },
-      "u2": { name: "Ada", username: "ada", total: 1, sent: 0, received: 1, unknown: 0, lastTimestamp: time(1) },
+      self: { authorId: "self", name: "Me", total: 8, sent: 8, received: 0, unknown: 0, lastTimestamp: time(4) },
+      u1: { authorId: "u1", name: "Zee", username: "zee", avatarUrl: "https://cdn.discordapp.com/avatars/u1/hash.png", total: 2, sent: 0, received: 2, unknown: 0, lastTimestamp: time(3) },
+      u2: { authorId: "u2", name: "Ada", username: "ada", total: 4, sent: 0, received: 4, unknown: 0, lastTimestamp: time(1) },
     } },
     "200": { conversationId: "200", navigationPath: "/channels/999/200", status: "cancelled", people: {
-      "u1": { name: "Zee", username: "zee", total: 2, sent: 0, received: 0, unknown: 2, lastTimestamp: time(5) },
+      self: { authorId: "self", total: 100, sent: 100, lastTimestamp: time(6) },
+      u1: { authorId: "u1", name: "Zee", username: "zee", total: 1, received: 1, lastTimestamp: time(5) },
+    } },
+    "300": { conversationId: "300", navigationPath: "/channels/@me/300", status: "partial", people: {
+      self: { authorId: "self", name: "Me", total: 3, sent: 3, lastTimestamp: time(7) },
+      u1: { authorId: "u1", name: "Zee newer", username: "zee", avatarUrl: "https://cdn.discordapp.com/avatars/u1/new.png", total: 1, received: 1, lastTimestamp: time(5) },
     } },
   } };
 }
 
-test("Frequent creates one stable person/conversation entry and counts unknown direction", () => {
-  const rows = buildFrequentContacts(contactSnapshot());
-  assert.equal(rows.length, 3);
-  assert.equal(rows.filter(row => row.authorId === "u1").length, 2);
-  const dm = rows.find(row => row.authorId === "u1" && row.conversationId === "100");
-  assert.equal(dm.messageCount, 3);
-  assert.equal(dm.displayName, "Zee");
-  assert.equal(dm.username, "zee");
-  assert.equal(dm.href, "/channels/@me/100");
-  assert.equal(rows.find(row => row.conversationId === "200").href, "/channels/999/200");
+test("Most Contacted Users excludes self and aggregates sent-message counts by stable user ID", () => {
+  const rows = buildFrequentContacts(contactSnapshot(), { currentUserId: "self" });
+  assert.equal(rows.length, 2);
+  assert.equal(rows.some(row => row.authorId === "self"), false);
+  const zee = rows.find(row => row.authorId === "u1");
+  assert.equal(zee.messageCount, 11);
+  assert.equal(zee.displayName, "Zee newer");
+  assert.equal(zee.username, "zee");
+  assert.equal(zee.avatarUrl, "https://cdn.discordapp.com/avatars/u1/new.png");
+  assert.equal(zee.lastTimestamp, time(7));
+  assert.equal(zee.href, "/channels/@me/300");
+  assert.equal(rows.find(row => row.authorId === "u2").messageCount, 8);
+  assert.equal(rows.some(row => row.href === "/channels/999/200"), false);
 });
 
 test("Frequent search is case insensitive and sorts by messages or recent activity", () => {
-  const rows = buildFrequentContacts(contactSnapshot());
-  assert.equal(buildFrequentContacts(contactSnapshot(), { search: "ADA" }).length, 1);
-  assert.equal(buildFrequentContacts(contactSnapshot(), { search: "u1" }).length, 2);
+  const options = { currentUserId: "self" };
+  const rows = buildFrequentContacts(contactSnapshot(), options);
+  assert.equal(buildFrequentContacts(contactSnapshot(), { ...options, search: "ADA" }).length, 1);
+  assert.equal(buildFrequentContacts(contactSnapshot(), { ...options, search: "u1" }).length, 1);
   assert.equal(rows[0].authorId, "u1");
-  const recent = buildFrequentContacts(contactSnapshot(), { sort: "recent" });
-  assert.equal(recent[0].conversationId, "200");
-  const names = buildFrequentContacts(contactSnapshot(), { sort: "name" });
+  const recent = buildFrequentContacts(contactSnapshot(), { ...options, sort: "recent" });
+  assert.equal(recent[0].conversationId, "300");
+  const names = buildFrequentContacts(contactSnapshot(), { ...options, sort: "name" });
   assert.equal(names[0].displayName, "Ada");
+});
+
+test("Frequent waits for a verified current-user ID instead of listing the owner as a contact", () => {
+  assert.deepEqual(buildFrequentContacts(contactSnapshot()), []);
 });
 
 test("only a matching ordinary Discord channel route is offered as a navigation link", () => {
@@ -54,11 +68,11 @@ test("Frequent renders an accessible native link to the captured conversation ro
   const document = { createElement(tagName) { return {
     tagName: tagName.toUpperCase(), attributes: {}, setAttribute(name, value) { this.attributes[name] = value; },
   }; } };
-  const [contact] = buildFrequentContacts(contactSnapshot());
+  const [contact] = buildFrequentContacts(contactSnapshot(), { currentUserId: "self" });
   const link = createDiscordConversationLink(document, contact);
   assert.equal(link.tagName, "A");
-  assert.equal(link.href, "/channels/@me/100");
-  assert.equal(link.textContent, "Zee");
+  assert.equal(link.href, "/channels/@me/300");
+  assert.equal(link.textContent, "Zee newer");
   assert.match(link.attributes["aria-label"], /Open Discord conversation/);
   assert.equal(createDiscordConversationLink(document, { ...contact, href: null }), null);
 });
@@ -70,16 +84,19 @@ test("collected identities, counts, usernames, and route persist and reconcile a
   const adapter = {
     async startScan() { return { navigationPath: "/channels/@me/100" }; },
     async getNextBatch() { return { done: true, records: [
-      { messageId: "m1", authorId: "u1", authorName: "Zee", authorUsername: "zee", timestamp: time(1) },
-      { messageId: "m1", authorId: "u1", authorName: "Zee", authorUsername: "zee", timestamp: time(1) },
+      { messageId: "mine-1", authorId: "self", authorName: "Me", timestamp: time(1), isSelf: true },
+      { messageId: "mine-1", authorId: "self", authorName: "Me", timestamp: time(1), isSelf: true },
+      { messageId: "theirs-1", authorId: "u1", authorName: "Zee", authorUsername: "zee", timestamp: time(2), isSelf: false,
+        avatarUrl: "https://cdn.discordapp.com/avatars/u1/hash.png" },
     ] }; },
   };
-  const result = await new CollectionCoordinator({ adapter, store }).collect("100");
-  assert.equal(result.processed, 1);
+  const result = await new CollectionCoordinator({ adapter, store, getCurrentUserId: () => "self" }).collect("100");
+  assert.equal(result.processed, 2);
   assert.equal(result.duplicates, 1);
   const afterReload = new HistoricalStore({ load: () => data, save });
-  const contacts = buildFrequentContacts(afterReload.snapshot());
+  const contacts = buildFrequentContacts(afterReload.snapshot(), { currentUserId: "self" });
   assert.equal(contacts.length, 1);
+  assert.equal(contacts[0].authorId, "u1");
   assert.equal(contacts[0].messageCount, 1);
   assert.equal(contacts[0].username, "zee");
   assert.equal(contacts[0].href, "/channels/@me/100");
@@ -87,45 +104,35 @@ test("collected identities, counts, usernames, and route persist and reconcile a
 
 test("Frequent reconciliation keeps stable identities and never merges identical names", () => {
   const snapshot = { conversations: { "100": { conversationId: "100", navigationPath: "/channels/@me/100", people: {
+    self: { authorId: "self", name: "Me", total: 4, sent: 4 },
     "u1": { authorId: "u1", name: "Alex", username: "alex-old", avatarUrl: "https://cdn.discordapp.com/avatars/u1/old.png", total: 2, lastTimestamp: time(2) },
     " u1 ": { authorId: " u1 ", name: "Alex New", username: "alex-new", avatarUrl: "https://cdn.discordapp.com/avatars/u1/new.png", total: 3, lastTimestamp: time(4) },
     "u2": { authorId: "u2", name: "Alex", username: "alex-two", total: 1, lastTimestamp: time(3) },
   } } } };
-  const rows = buildFrequentContacts(snapshot);
+  const rows = buildFrequentContacts(snapshot, { currentUserId: "self" });
   const alexes = rows.filter(row => row.displayName.startsWith("Alex"));
   assert.equal(rows.filter(row => row.authorId === "u1").length, 1);
-  assert.equal(rows.find(row => row.authorId === "u1").messageCount, 5);
-  assert.equal(rows.find(row => row.authorId === "u2").messageCount, 1);
+  assert.equal(rows.find(row => row.authorId === "u1").messageCount, 4);
+  assert.equal(rows.find(row => row.authorId === "u2").messageCount, 4);
   assert.equal(alexes.length, 2);
   assert.equal(rows.some(row => row.authorId === "unknown"), false);
 });
 
 test("Frequent excludes unresolved identities and never renders unresolved as a person", () => {
   const snapshot = { conversations: { "100": { conversationId: "100", navigationPath: "/channels/@me/100", people: {
+    self: { authorId: "self", total: 2, sent: 2 },
     "__unresolved_author__": { authorId: "__unresolved_author__", name: "Unknown", total: 4 },
     u1: { authorId: "u1", name: "Pat", total: 2 },
   } } } };
-  const rows = buildFrequentContacts(snapshot);
+  const rows = buildFrequentContacts(snapshot, { currentUserId: "self" });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].authorId, "u1");
 });
 
-test("missing or stale conversation route produces an explicit navigation fallback", () => {
+test("Frequent skips conversations without a confirmed direct-message route", () => {
   const snapshot = { conversations: { "42": { conversationId: "42", navigationPath: null, people: {
+    self: { authorId: "self", total: 2, sent: 2 },
     "person-id": { name: "Pat", total: 2 },
   } } } };
-  const [contact] = buildFrequentContacts(snapshot);
-  assert.equal(contact.href, null);
-  assert.equal(contact.authorId, "person-id");
-});
-
-test("Frequent excludes the current user's identity while retaining other participants", () => {
-  const snapshot = { conversations: { "100": { conversationId: "100", navigationPath: "/channels/@me/100", people: {
-    "self-id": { authorId: "self-id", name: "Me", total: 8, sent: 8, received: 0, unknown: 0 },
-    "other-id": { authorId: "other-id", name: "Pat", total: 4, sent: 0, received: 4, unknown: 0 },
-  } } } };
-  const rows = buildFrequentContacts(snapshot, { currentUserId: "self-id" });
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].authorId, "other-id");
-  assert.equal(rows.some(row => row.authorId === "self-id"), false);
+  assert.deepEqual(buildFrequentContacts(snapshot, { currentUserId: "self" }), []);
 });

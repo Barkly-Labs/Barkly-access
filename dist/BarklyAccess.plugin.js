@@ -159,14 +159,14 @@ function resolveParticipant({ authorId, currentUserId } = {}) {
 function discoverCurrentUserId(document2) {
   if (!document2?.querySelectorAll) return null;
   const candidates = [
-    ...document2.querySelectorAll("[data-user-id], [data-author-id]"),
+    ...document2.querySelectorAll("[data-user-id]"),
     ...document2.querySelectorAll('a[href*="/users/"]')
   ];
   for (const node of candidates) {
-    const direct = node.getAttribute?.("data-user-id") || node.getAttribute?.("data-author-id");
+    const direct = node.getAttribute?.("data-user-id");
     const href = node.getAttribute?.("href") || "";
-    const directId = /^\d{5,}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
-    const id = canonicalAuthorId(directId || href.match(/\/users\/(\d{5,})/)?.[1]);
+    const directId = /^\d{17,20}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
+    const id = canonicalAuthorId(directId || href.match(/\/users\/(\d{17,20})/)?.[1]);
     if (id) {
       const accountContext = node.closest?.('[class*="account" i], [class*="panels" i]');
       if (accountContext) return id;
@@ -913,44 +913,74 @@ function getConversationHref(pathname, conversationId) {
 function buildFrequentContacts(snapshot, { search = "", sort = "messages", currentUserId = null } = {}) {
   const query = String(search).trim().toLocaleLowerCase();
   const selfId = canonicalAuthorId(currentUserId);
+  if (!selfId) return [];
   const contacts = /* @__PURE__ */ new Map();
   for (const conversation of Object.values(snapshot?.conversations || {})) {
-    for (const [authorId, person] of Object.entries(conversation.people || {})) {
-      const stableId = canonicalAuthorId(person.authorId ?? authorId);
-      if (!stableId || stableId === UNRESOLVED_AUTHOR_ID || (selfId && stableId === selfId)) continue;
-      const total = Number.isFinite(person.total) ? person.total : (person.sent || 0) + (person.received || 0) + (person.unknown || 0);
-      if (total <= 0) continue;
-      const key = `${conversation.conversationId}\0${stableId}`;
+    if (!/^\/channels\/@me\/\d+\/?$/.test(conversation.navigationPath || "")) continue;
+    const peopleById = /* @__PURE__ */ new Map();
+    for (const [personKey, person] of Object.entries(conversation.people || {})) {
+      const stableId = canonicalAuthorId(person.authorId ?? personKey);
+      if (!stableId) continue;
+      const existing = peopleById.get(stableId);
+      if (!existing) peopleById.set(stableId, person);
+      else {
+        const existingRecent = Number(existing.lastTimestamp) || 0;
+        const incomingRecent = Number(person.lastTimestamp) || 0;
+        peopleById.set(stableId, {
+          ...existing,
+          ...incomingRecent >= existingRecent ? person : {},
+          authorId: stableId,
+          total: Math.max(Number(existing.total) || 0, Number(person.total) || 0),
+          lastTimestamp: Math.max(existingRecent, incomingRecent) || null
+        });
+      }
+    }
+    const self = peopleById.get(selfId);
+    if (!self) continue;
+    const ownTotal = Number(self.total);
+    const sentToConversation = Number.isFinite(ownTotal) && ownTotal >= 0 ? ownTotal : (Number(self.sent) || 0) + (Number(self.received) || 0) + (Number(self.unknown) || 0);
+    if (sentToConversation <= 0) continue;
+    const recentConversationActivity = Math.max(
+      Number(self.lastTimestamp) || 0,
+      ...[...peopleById.values()].map((person) => Number(person.lastTimestamp) || 0)
+    );
+    for (const [stableId, person] of peopleById) {
+      if (!stableId || stableId === UNRESOLVED_AUTHOR_ID || stableId === selfId) continue;
+      const key = stableId;
       const existing = contacts.get(key);
+      const isMoreRecent = recentConversationActivity >= (existing?.lastTimestamp || 0);
       if (existing) {
-        existing.messageCount += total;
-        const incomingTimestamp = person.lastTimestamp || 0;
-        if (incomingTimestamp >= (existing.lastTimestamp || 0) && person.name) existing.displayName = person.name;
-        existing.lastTimestamp = Math.max(existing.lastTimestamp || 0, incomingTimestamp) || null;
-        if (incomingTimestamp >= (existing.lastTimestamp || 0) && person.username) existing.username = person.username;
-        if (incomingTimestamp >= (existing.lastTimestamp || 0) && person.avatarUrl) existing.avatarUrl = person.avatarUrl;
-        if (!existing.username && person.username) existing.username = person.username;
-        if (!existing.avatarUrl && person.avatarUrl) existing.avatarUrl = person.avatarUrl;
-        if (existing.displayName === String(existing.authorId) && person.name) existing.displayName = person.name;
+        existing.messageCount += sentToConversation;
+        existing.lastTimestamp = Math.max(existing.lastTimestamp || 0, recentConversationActivity) || null;
+        if (isMoreRecent) {
+          existing.displayName = person.name || existing.displayName;
+          existing.username = person.username || existing.username;
+          existing.avatarUrl = person.avatarUrl || existing.avatarUrl;
+          existing.conversationId = String(conversation.conversationId);
+          existing.conversationStatus = conversation.status;
+          existing.href = getConversationHref(conversation.navigationPath, conversation.conversationId);
+        }
         continue;
       }
       const contact = {
         key,
         authorId: stableId,
         conversationId: String(conversation.conversationId),
-        displayName: person.name || String(authorId),
+        displayName: person.name || stableId,
         username: person.username || "",
         avatarUrl: person.avatarUrl || "",
-        messageCount: total,
-        lastTimestamp: person.lastTimestamp || null,
+        messageCount: sentToConversation,
+        lastTimestamp: recentConversationActivity || null,
         conversationStatus: conversation.status,
         href: getConversationHref(conversation.navigationPath, conversation.conversationId)
       };
-      const haystack = `${contact.displayName} ${contact.username} ${contact.authorId} ${contact.conversationId}`.toLocaleLowerCase();
-      if (!query || haystack.includes(query)) contacts.set(key, contact);
+      contacts.set(key, contact);
     }
   }
-  const result = [...contacts.values()];
+  const result = [...contacts.values()].filter((contact) => {
+    const haystack = `${contact.displayName} ${contact.username} ${contact.authorId}`.toLocaleLowerCase();
+    return !query || haystack.includes(query);
+  });
   if (sort === "recent") result.sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0) || a.displayName.localeCompare(b.displayName));
   else if (sort === "name") result.sort((a, b) => a.displayName.localeCompare(b.displayName) || a.authorId.localeCompare(b.authorId));
   else result.sort((a, b) => b.messageCount - a.messageCount || a.displayName.localeCompare(b.displayName));
@@ -960,9 +990,13 @@ function buildFrequentContacts(snapshot, { search = "", sort = "messages", curre
 // src/integrations/betterdiscord/rendered-history-adapter.js
 function extractRenderedAuthor(row) {
   if (!row) return null;
-  const direct = row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id") || row.querySelector?.("[data-user-id]")?.getAttribute?.("data-user-id") || row.querySelector?.("[data-author-id]")?.getAttribute?.("data-author-id") || null;
-  const href = row.querySelector?.('a[href*="/users/"]')?.getAttribute?.("href") || row.querySelector?.('[href*="/users/"]')?.getAttribute?.("href") || "";
-  const avatar = row.querySelector?.('img[src*="/avatars/"]')?.getAttribute?.("src") || "";
+  const nameNode = row.querySelector?.('[class*="username"]') || null;
+  const header = row.querySelector?.('[class*="header"]') || nameNode?.parentElement?.parentElement || null;
+  const identityNode = nameNode?.closest?.("[data-user-id], [data-author-id]") || header?.querySelector?.("[data-user-id], [data-author-id]") || row;
+  const direct = identityNode?.getAttribute?.("data-user-id") || identityNode?.getAttribute?.("data-author-id") || row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id") || null;
+  const authorLink = nameNode?.closest?.('a[href*="/users/"]') || header?.querySelector?.('a[href*="/users/"]') || null;
+  const href = authorLink?.getAttribute?.("href") || "";
+  const avatar = header?.querySelector?.('img[src*="/avatars/"]')?.getAttribute?.("src") || row.querySelector?.('[class*="avatar"] img[src*="/avatars/"], img[class*="avatar"][src*="/avatars/"]')?.getAttribute?.("src") || "";
   const fromHref = href.match(/\/users\/(\d{5,})/)?.[1] || null;
   const directId = /^\d{5,}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
   const id = String(directId || fromHref || "").trim();
@@ -1174,7 +1208,7 @@ function createDiscordConversationLink(document2, contact) {
   const link = document2.createElement("a");
   link.className = "ba-contact-link";
   link.href = contact.href;
-  link.setAttribute("aria-label", `Open Discord conversation with ${contact.displayName}, ${contact.messageCount.toLocaleString()} collected messages`);
+  link.setAttribute("aria-label", `Open Discord conversation with ${contact.displayName}, ${contact.messageCount.toLocaleString()} messages sent`);
   link.textContent = contact.displayName;
   return link;
 }
@@ -1278,7 +1312,7 @@ var BarklyAccess = class {
     const p = document.createElement("aside");
     p.id = this.panelId;
     p.setAttribute("aria-label", "Barkly Access");
-    p.innerHTML = `<button class="ba-main" aria-expanded="false">Barkly Access <span aria-hidden="true">\uFF0B</span></button><div class="ba-options" hidden><div class="ba-tabs" role="tablist" aria-label="Barkly Access features"><button type="button" role="tab" aria-selected="true" data-tab="controls" class="ba-tab-active">Access</button><button type="button" role="tab" aria-selected="false" data-tab="frequent">Frequent</button><button type="button" role="tab" aria-selected="false" data-tab="stats">Stats</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><div class="ba-access-settings"><label for="ba-current-user-id">Current Discord user ID <span>(optional; enables reliable sender separation)</span></label><input id="ba-current-user-id" inputmode="numeric" autocomplete="off" maxlength="20" placeholder="Paste your user ID"><label for="ba-control-size">Control size</label><select id="ba-control-size"><option value="normal">Normal</option><option value="large">Large</option></select><label for="ba-density">Visual density</label><select id="ba-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F \xB7 quiet view<br>Ctrl+Shift+R \xB7 restore</p></section><section data-pane="frequent" hidden><h2 class="ba-frequent-title">Frequent contacts</h2><p class="ba-summary">People and conversations come from the same saved, deduplicated analytics as Stats. Counts mean unique messages collected for that person in that conversation.</p><div class="ba-frequent-controls"><label for="ba-frequent-search">Search people</label><input id="ba-frequent-search" type="search" autocomplete="off" placeholder="Name, username, or ID"><label for="ba-frequent-sort">Sort contacts</label><select id="ba-frequent-sort"><option value="messages">Most messages</option><option value="recent">Most recent interaction</option><option value="name">Name</option></select></div><div class="ba-frequent-status" role="status" aria-live="polite">Frequent contacts update as conversation batches are collected.</div><ul class="ba-frequent-list" aria-label="Tracked people and conversation shortcuts"></ul></section><section data-pane="stats" hidden><h2 class="ba-stats-title">Conversation analytics</h2><p class="ba-summary">Local, metadata-only summaries. Discord exposes only history rendered in the selected conversation, so coverage cannot be confirmed as complete.</p><div class="ba-collection-status" role="status" aria-live="polite"></div><button type="button" data-action="openAnalytics" class="ba-open-analytics">Open Analytics Dashboard</button><button type="button" data-action="collectNow" class="ba-secondary">Backfill selected conversation</button><button type="button" data-action="cancelCollection" class="ba-secondary" hidden>Stop collection</button><button type="button" data-action="clearConversation" class="ba-secondary">Clear this conversation</button><button type="button" data-action="clearAnalytics" class="ba-secondary">Clear all analytics</button></section></div>`;
+    p.innerHTML = `<button class="ba-main" aria-expanded="false">Barkly Access <span aria-hidden="true">\uFF0B</span></button><div class="ba-options" hidden><div class="ba-tabs" role="tablist" aria-label="Barkly Access features"><button type="button" role="tab" aria-selected="true" data-tab="controls" class="ba-tab-active">Access</button><button type="button" role="tab" aria-selected="false" data-tab="frequent">Frequent</button><button type="button" role="tab" aria-selected="false" data-tab="stats">Stats</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><div class="ba-access-settings"><label for="ba-current-user-id">Current Discord user ID <span>(needed if automatic account detection is unavailable)</span></label><input id="ba-current-user-id" inputmode="numeric" autocomplete="off" maxlength="20" placeholder="Paste your user ID"><label for="ba-control-size">Control size</label><select id="ba-control-size"><option value="normal">Normal</option><option value="large">Large</option></select><label for="ba-density">Visual density</label><select id="ba-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F \xB7 quiet view<br>Ctrl+Shift+R \xB7 restore</p></section><section data-pane="frequent" hidden><h2 class="ba-frequent-title">Most Contacted Users</h2><p class="ba-summary">Ranked by unique messages you sent in direct conversations. Message contents are not stored.</p><div class="ba-frequent-controls"><label for="ba-frequent-search">Search users</label><input id="ba-frequent-search" type="search" autocomplete="off" placeholder="Name, username, or ID"><label for="ba-frequent-sort">Sort users</label><select id="ba-frequent-sort"><option value="messages">Most messages sent</option><option value="recent">Most recent interaction</option><option value="name">Name</option></select></div><div class="ba-frequent-status" role="status" aria-live="polite">Users are ranked as conversation data is collected.</div><ul class="ba-frequent-list" aria-label="Most contacted Discord users"></ul></section><section data-pane="stats" hidden><h2 class="ba-stats-title">Conversation analytics</h2><p class="ba-summary">Local, metadata-only summaries. Discord exposes only history rendered in the selected conversation, so coverage cannot be confirmed as complete.</p><div class="ba-collection-status" role="status" aria-live="polite"></div><button type="button" data-action="openAnalytics" class="ba-open-analytics">Open Analytics Dashboard</button><button type="button" data-action="collectNow" class="ba-secondary">Backfill selected conversation</button><button type="button" data-action="cancelCollection" class="ba-secondary" hidden>Stop collection</button><button type="button" data-action="clearConversation" class="ba-secondary">Clear this conversation</button><button type="button" data-action="clearAnalytics" class="ba-secondary">Clear all analytics</button></section></div>`;
     p.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-action], button[data-tab], button[data-author], button[data-exclude], button.ba-main");
       if (!b) return;
@@ -1324,12 +1358,13 @@ var BarklyAccess = class {
     userId.value = this.state.currentUserId || "";
     userId.addEventListener("change", () => {
       const value = userId.value.trim();
-      this.state.currentUserId = /^\d{15,20}$/.test(value) ? value : "";
-      if (!this.state.currentUserId && value) BdApi.UI.showToast("Enter a numeric Discord user ID, or leave it blank.", { type: "error" });
+      this.state.currentUserId = /^\d{17,20}$/.test(value) ? value : "";
+      if (!this.state.currentUserId && value) BdApi.UI.showToast("Enter a 17\u201320 digit Discord user ID, or leave it blank.", { type: "error" });
       else BdApi.UI.showToast("Sender identity setting saved locally.", { type: "success" });
       userId.value = this.state.currentUserId;
       this.save();
       this.renderStats();
+      this.refreshFrequent();
     });
     const controlSize = p.querySelector("#ba-control-size");
     controlSize.value = this.state.controlSize || "normal";
@@ -1365,7 +1400,7 @@ var BarklyAccess = class {
   }
   getCurrentUserId() {
     const configured = String(this.state.currentUserId || "").trim();
-    return /^\d{15,20}$/.test(configured) ? configured : discoverCurrentUserId(document);
+    return /^\d{17,20}$/.test(configured) ? configured : discoverCurrentUserId(document);
   }
   bindHistoryObserver() {
     if (!this.historyObserver) return;
@@ -1830,12 +1865,13 @@ var BarklyAccess = class {
     if (!contacts.length) {
       const empty = document.createElement("li");
       empty.className = "ba-frequent-empty";
-      empty.textContent = "No tracked contacts match yet. Open a Discord conversation; collected people will appear here.";
+      const hasCurrentUserId = !!this.getCurrentUserId();
+      empty.textContent = hasCurrentUserId ? "No sent messages to identifiable direct-message participants have been collected yet." : "Set your Discord user ID in Access settings so Barkly Access can exclude your account and count your sent messages.";
       list.appendChild(empty);
-      status.textContent = "No collected contacts match this search.";
+      status.textContent = hasCurrentUserId ? "No contacted users match this search." : "Your own account ID is needed to build this list accurately.";
       return;
     }
-    status.textContent = `${contacts.length.toLocaleString()} person\u2013conversation entries. Counts are unique messages collected in each conversation; history coverage may be partial.`;
+    status.textContent = `${contacts.length.toLocaleString()} users \xB7 ranked by unique messages you sent in direct conversations.`;
     for (const contact of contacts) {
       const item = document.createElement("li");
       item.className = "ba-frequent-item";
@@ -1870,17 +1906,14 @@ var BarklyAccess = class {
         username.textContent = `@${contact.username.replace(/^@/, "")}`;
         title.appendChild(username);
       }
-      const identity = document.createElement("p");
-      identity.className = "ba-contact-identity";
-      identity.textContent = `User ID ${contact.authorId} \xB7 Conversation ${contact.conversationId}`;
       const metadata = document.createElement("p");
       metadata.className = "ba-contact-meta";
-      metadata.textContent = `${contact.messageCount.toLocaleString()} collected messages \xB7 ${contact.lastTimestamp ? `Last interaction ${new Date(contact.lastTimestamp).toLocaleString()}` : "No timestamp available"} \xB7 ${contact.conversationStatus} collection`;
-      content.append(title, identity, metadata);
+      metadata.textContent = contact.lastTimestamp ? `Last interaction ${new Date(contact.lastTimestamp).toLocaleString()}` : "No timestamp available";
+      content.append(title, metadata);
       const count3 = document.createElement("strong");
       count3.className = "ba-contact-count";
       count3.textContent = contact.messageCount.toLocaleString();
-      count3.setAttribute("aria-label", `${contact.messageCount.toLocaleString()} collected messages`);
+      count3.setAttribute("aria-label", `${contact.messageCount.toLocaleString()} messages sent`);
       item.append(monogram, content, count3);
       if (!contact.href) {
         const fallback = document.createElement("p");

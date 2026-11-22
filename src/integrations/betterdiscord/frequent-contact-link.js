@@ -7,7 +7,7 @@ export function createDiscordConversationLink(document, contact) {
   const link = document.createElement("a");
   link.className = "ba-contact-link";
   link.href = contact.href;
-  link.setAttribute("aria-label", `Open Discord conversation with ${contact.displayName}, ${contact.messageCount.toLocaleString()} collected messages`);
+  link.setAttribute("aria-label", `Open Discord conversation with ${contact.displayName}, ${contact.messageCount.toLocaleString()} messages sent`);
   link.textContent = contact.displayName;
   return link;
 }

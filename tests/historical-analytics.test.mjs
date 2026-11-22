@@ -24,6 +24,9 @@ test("participant resolver separates current user, other participants, and unres
     return [];
   } };
   assert.equal(discoverCurrentUserId(document), "123456789012345678");
+  const accountNode = { getAttribute: name => name === "data-user-id" ? "123456789012345678" : null, closest: () => ({}) };
+  assert.equal(discoverCurrentUserId({ querySelectorAll: selector => selector === "[data-user-id]" ? [accountNode] : [] }), "123456789012345678");
+  assert.equal(discoverCurrentUserId({ querySelectorAll: selector => selector === "[data-author-id]" ? [accountNode] : [] }), null);
   assert.equal(discoverCurrentUserId({ querySelectorAll: selector => selector.includes('img[src*="/avatars/"]')
     ? [{ getAttribute: () => "https://cdn.discordapp.com/avatars/123456789012345678/hash.png", closest: () => ({}) }]
     : [] }), null);
@@ -330,7 +333,9 @@ test("rendered author extraction supports stable links and ignores missing ident
   assert.equal(extractRenderedAuthor(missing), null);
   const linkRow = {
     getAttribute: () => null,
-    querySelector: selector => selector.includes("/users/") ? { getAttribute: () => "https://discord.com/users/987654321098765432" } : null,
+    querySelector: selector => selector.includes("header") ? {
+      querySelector: nested => nested.includes("/users/") ? { getAttribute: () => "https://discord.com/users/987654321098765432" } : null,
+    } : null,
   };
   assert.equal(extractRenderedAuthor(linkRow).authorId, "987654321098765432");
 });
@@ -338,7 +343,7 @@ test("rendered author extraction supports stable links and ignores missing ident
 test("rendered adapter reads only the selected conversation's rendered message metadata", async () => {
   const row = {
     id: "chat-messages-123456789012345678",
-    getAttribute: () => null,
+    getAttribute: name => name === "data-author-id" ? "987654321098765432" : null,
     querySelector(selector) {
       if (selector.includes("/users/")) return { getAttribute: () => "/users/987654321098765432" };
       if (selector.includes("/avatars/")) return null;
@@ -370,7 +375,7 @@ test("rendered adapter scrolls the selected message list to load older rows then
   let rows = [];
   const row = id => ({
     id: `chat-messages-${id}`,
-    getAttribute: () => null,
+    getAttribute: name => name === "data-author-id" ? "987654321098765432" : null,
     querySelector: selector => selector.includes("/users/") ? { getAttribute: () => "/users/987654321098765432" }
       : selector.includes("username") ? { textContent: "Pat" }
         : selector.includes("time") ? { getAttribute: () => "2026-02-01T00:00:00Z" } : null,
@@ -397,7 +402,7 @@ test("rendered adapter scrolls the selected message list to load older rows then
 
 test("rendered adapter incremental refresh reads visible rows without scrolling or waiting", async () => {
   const rows = [{
-    id: "chat-messages-123456789012345678", getAttribute: () => null,
+    id: "chat-messages-123456789012345678", getAttribute: name => name === "data-author-id" ? "987654321098765432" : null,
     querySelector: selector => selector.includes("/users/") ? { getAttribute: () => "/users/987654321098765432" } : null,
   }];
   const dom = mockMessageRoot(() => rows, { initialTop: 400 });

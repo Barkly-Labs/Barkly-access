@@ -20,14 +20,14 @@ export function resolveParticipant({ authorId, currentUserId } = {}) {
 export function discoverCurrentUserId(document) {
   if (!document?.querySelectorAll) return null;
   const candidates = [
-    ...document.querySelectorAll('[data-user-id], [data-author-id]'),
+    ...document.querySelectorAll('[data-user-id]'),
     ...document.querySelectorAll('a[href*="/users/"]'),
   ];
   for (const node of candidates) {
-    const direct = node.getAttribute?.("data-user-id") || node.getAttribute?.("data-author-id");
+    const direct = node.getAttribute?.("data-user-id");
     const href = node.getAttribute?.("href") || "";
-    const directId = /^\d{5,}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
-    const id = canonicalAuthorId(directId || href.match(/\/users\/(\d{5,})/)?.[1]);
+    const directId = /^\d{17,20}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
+    const id = canonicalAuthorId(directId || href.match(/\/users\/(\d{17,20})/)?.[1]);
     if (id) {
       const accountContext = node.closest?.('[class*="account" i], [class*="panels" i]');
       if (accountContext) return id;
