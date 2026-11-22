@@ -69,7 +69,7 @@ export class CollectionCoordinator {
         this.store.markStatus(conversationId, "processing");
         const normalized = normalizeMessages(batch.records, {
           getMessageId: m => m.messageId ?? m.id ?? m.message_id,
-          getAuthorId: m => m.authorId ?? m.author_id ?? m.user_id ?? m.author?.id ?? (typeof m.author === "string" ? m.author : null),
+          getAuthorId: m => m.authorId ?? m.author_id ?? m.user_id ?? m.author?.id ?? null,
           getAuthorName: m => m.authorName ?? m.author?.username ?? m.author?.name ?? m.username ?? (typeof m.author === "string" ? m.author : ""),
           getAuthorUsername: m => m.authorUsername ?? m.username ?? m.author?.username ?? "",
           getAvatarUrl: m => m.avatarUrl ?? m.avatar_url ?? "",

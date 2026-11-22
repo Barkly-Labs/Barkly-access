@@ -1,3 +1,5 @@
+import { canonicalAuthorId } from "../identity/stable-author.js";
+
 /**
  * Normalizes source messages for count-only processing.
  * The returned objects intentionally omit message text and attachments.
@@ -19,8 +21,8 @@ export function normalizeMessages(sourceMessages, {
   return sourceMessages.flatMap((m) => {
     if (!m || typeof m !== "object") return [];
     const messageId = getMessageId(m);
-    const authorId = getAuthorId(m);
-    if (messageId == null || authorId == null) return [];
+    const authorId = canonicalAuthorId(getAuthorId(m));
+    if (messageId == null || !authorId) return [];
 
     const rawTimestamp = getTimestamp(m);
     let numericTimestamp = rawTimestamp == null ? null

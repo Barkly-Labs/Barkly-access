@@ -5,6 +5,7 @@ import {
   sanitizeAnalyticsRecord,
 } from "../privacy/data-policy.js";
 import { INITIAL_COLLECTION_STATES } from "../collection/collection-state.js";
+import { canonicalAuthorId, mergeAuthorRecords } from "../identity/stable-author.js";
 
 const emptyState = () => ({ version: ANALYTICS_SCHEMA_VERSION, conversations: {} });
 
@@ -27,19 +28,25 @@ export class HistoricalStore {
       return emptyState();
     }
     const conversations = {};
+    let needsWrite = false;
     for (const [id, raw] of Object.entries(value.conversations)) {
       if (!raw || typeof raw !== "object") continue;
       const people = {};
       for (const [personId, person] of Object.entries(raw.people || {})) {
         if (!person || typeof person !== "object") continue;
-        people[String(personId)] = {
-          authorId: String(personId), name: safeString(person.name, 100) || String(personId),
+        const canonicalId = canonicalAuthorId(person.authorId ?? personId);
+        if (!canonicalId) continue;
+        const normalized = {
+          authorId: canonicalId, name: safeString(person.name, 100) || canonicalId,
           username: safeString(person.username, 100), avatarUrl: safeAvatar(person.avatarUrl),
-          sent: count(person.sent), received: count(person.received), unknown: count(person.unknown),
+          sent: count(person.sent), received: count(person.received),
+          unknown: person.sent == null && person.received == null && person.unknown == null ? count(person.total) : count(person.unknown),
           total: count(person.total), firstTimestamp: finiteOrNull(person.firstTimestamp), lastTimestamp: finiteOrNull(person.lastTimestamp),
           daily: countMap(person.daily), dailySent: countMap(person.dailySent), dailyReceived: countMap(person.dailyReceived), dailyUnknown: countMap(person.dailyUnknown),
           hourly: countArray(person.hourly), hourlySent: countArray(person.hourlySent), hourlyReceived: countArray(person.hourlyReceived), hourlyUnknown: countArray(person.hourlyUnknown),
         };
+        if (String(personId) !== canonicalId || people[canonicalId]) needsWrite = true;
+        people[canonicalId] = mergeAuthorRecords(people[canonicalId], normalized);
       }
       conversations[String(id)] = {
         conversationId: String(id),
@@ -65,7 +72,11 @@ export class HistoricalStore {
         ...(raw.error ? { error: safeString(raw.error, 240) } : {}),
       };
     }
-    return { version: ANALYTICS_SCHEMA_VERSION, conversations };
+    const reconciled = { version: ANALYTICS_SCHEMA_VERSION, conversations };
+    if (needsWrite) {
+      try { this.write(reconciled); this.lastError = null; } catch (error) { this.lastError = error; }
+    }
+    return reconciled;
   }
 
   getConversation(conversationId) {
@@ -149,7 +160,8 @@ export class HistoricalStore {
     const state = this.snapshot();
     const entry = state.conversations[String(conversationId)];
     if (!entry) return;
-    const id = String(authorId);
+    const id = canonicalAuthorId(authorId);
+    if (!id) return;
     const values = new Set(entry.excludedAuthors);
     if (excluded) values.add(id); else values.delete(id);
     entry.excludedAuthors = [...values];
@@ -188,7 +200,8 @@ export class HistoricalStore {
   }
 
   addRecord(entry, record) {
-    const authorId = record.authorId;
+    const authorId = canonicalAuthorId(record.authorId);
+    if (!authorId) return;
     const person = entry.people[authorId] || {
       authorId, name: record.authorName || authorId, username: record.authorUsername || "", avatarUrl: "", sent: 0, received: 0, unknown: 0, total: 0, firstTimestamp: null, lastTimestamp: null,
       daily: {}, dailySent: {}, dailyReceived: {}, dailyUnknown: {}, hourly: Array(24).fill(0),

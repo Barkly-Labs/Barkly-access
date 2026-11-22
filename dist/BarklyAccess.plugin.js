@@ -29,6 +29,59 @@ __export(BarklyAccess_plugin_exports, {
 });
 module.exports = __toCommonJS(BarklyAccess_plugin_exports);
 
+// src/core/identity/stable-author.js
+function canonicalAuthorId(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const id = String(value).trim();
+  if (!id || id.length > 100) return null;
+  if (/^(null|undefined|unknown|anonymous)$/i.test(id)) return null;
+  return id;
+}
+function mergeAuthorRecords(current, incoming) {
+  if (!incoming || typeof incoming !== "object") return current;
+  const result = current && typeof current === "object" ? structuredClone(current) : {};
+  const authorId = canonicalAuthorId(incoming.authorId ?? incoming.author_id ?? result.authorId);
+  if (!authorId) return null;
+  result.authorId = authorId;
+  const incomingName = typeof incoming.name === "string" ? incoming.name.trim() : "";
+  const resultName = typeof result.name === "string" ? result.name.trim() : "";
+  if (incomingName) result.name = incomingName;
+  else if (!resultName) result.name = authorId;
+  const incomingUsername = typeof incoming.username === "string" ? incoming.username.trim() : "";
+  if (incomingUsername) result.username = incomingUsername;
+  if (typeof incoming.avatarUrl === "string" && incoming.avatarUrl) result.avatarUrl = incoming.avatarUrl;
+  for (const direction of ["sent", "received", "unknown"]) result[direction] = count(result[direction]) + count(incoming[direction]);
+  result.total = result.sent + result.received + result.unknown;
+  result.firstTimestamp = earliest(result.firstTimestamp, incoming.firstTimestamp);
+  result.lastTimestamp = latest(result.lastTimestamp, incoming.lastTimestamp);
+  result.daily = mergeCountMap(result.daily, incoming.daily);
+  result.dailySent = mergeCountMap(result.dailySent, incoming.dailySent);
+  result.dailyReceived = mergeCountMap(result.dailyReceived, incoming.dailyReceived);
+  result.dailyUnknown = mergeCountMap(result.dailyUnknown, incoming.dailyUnknown);
+  result.hourly = mergeCountArray(result.hourly, incoming.hourly);
+  result.hourlySent = mergeCountArray(result.hourlySent, incoming.hourlySent);
+  result.hourlyReceived = mergeCountArray(result.hourlyReceived, incoming.hourlyReceived);
+  result.hourlyUnknown = mergeCountArray(result.hourlyUnknown, incoming.hourlyUnknown);
+  return result;
+}
+var count = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
+var earliest = (a, b) => {
+  const values = [a, b].map(Number).filter((v) => Number.isFinite(v) && v >= 0);
+  return values.length ? Math.min(...values) : null;
+};
+var latest = (a, b) => {
+  const values = [a, b].map(Number).filter((v) => Number.isFinite(v) && v >= 0);
+  return values.length ? Math.max(...values) : null;
+};
+var mergeCountMap = (a, b) => {
+  const r = {};
+  for (const s of [a, b]) if (s && typeof s === "object") {
+    for (const [k, v] of Object.entries(s)) if (/^\d{4}-\d{2}-\d{2}$/.test(k)) r[k] = count(r[k]) + count(v);
+  }
+  return r;
+};
+var mergeCountArray = (a, b) => Array.from({ length: 24 }, (_, h) => count(a?.[h]) + count(b?.[h]));
+
 // src/core/privacy/data-policy.js
 var ANALYTICS_SCHEMA_VERSION = 1;
 var MAX_DEDUPE_KEYS_PER_CONVERSATION = Number.MAX_SAFE_INTEGER;
@@ -43,11 +96,12 @@ function fingerprintMessageId(messageId) {
 function sanitizeAnalyticsRecord(record) {
   if (!record || typeof record !== "object") return null;
   const { messageId, authorId } = record;
-  if (messageId == null || authorId == null) return null;
+  const canonicalId = canonicalAuthorId(authorId);
+  if (messageId == null || !canonicalId) return null;
   const timestamp = record.timestamp == null ? null : Number(record.timestamp);
   return {
     messageId: String(messageId),
-    authorId: String(authorId),
+    authorId: canonicalId,
     authorName: typeof record.authorName === "string" ? record.authorName.slice(0, 100) : "",
     authorUsername: typeof record.authorUsername === "string" ? record.authorUsername.slice(0, 100) : "",
     avatarUrl: typeof record.avatarUrl === "string" && /^https:\/\/[^\s]{1,500}$/.test(record.avatarUrl) ? record.avatarUrl : "",
@@ -99,20 +153,23 @@ var HistoricalStore = class {
       return emptyState();
     }
     const conversations = {};
+    let needsWrite = false;
     for (const [id, raw] of Object.entries(value.conversations)) {
       if (!raw || typeof raw !== "object") continue;
       const people = {};
       for (const [personId, person] of Object.entries(raw.people || {})) {
         if (!person || typeof person !== "object") continue;
-        people[String(personId)] = {
-          authorId: String(personId),
-          name: safeString(person.name, 100) || String(personId),
+        const canonicalId = canonicalAuthorId(person.authorId ?? personId);
+        if (!canonicalId) continue;
+        const normalized = {
+          authorId: canonicalId,
+          name: safeString(person.name, 100) || canonicalId,
           username: safeString(person.username, 100),
           avatarUrl: safeAvatar(person.avatarUrl),
-          sent: count(person.sent),
-          received: count(person.received),
-          unknown: count(person.unknown),
-          total: count(person.total),
+          sent: count2(person.sent),
+          received: count2(person.received),
+          unknown: person.sent == null && person.received == null && person.unknown == null ? count2(person.total) : count2(person.unknown),
+          total: count2(person.total),
           firstTimestamp: finiteOrNull(person.firstTimestamp),
           lastTimestamp: finiteOrNull(person.lastTimestamp),
           daily: countMap(person.daily),
@@ -124,13 +181,15 @@ var HistoricalStore = class {
           hourlyReceived: countArray(person.hourlyReceived),
           hourlyUnknown: countArray(person.hourlyUnknown)
         };
+        if (String(personId) !== canonicalId || people[canonicalId]) needsWrite = true;
+        people[canonicalId] = mergeAuthorRecords(people[canonicalId], normalized);
       }
       conversations[String(id)] = {
         conversationId: String(id),
         navigationPath: validConversationPath(raw.navigationPath, id),
         collection: sanitizeCollection(raw.collection),
         status: validStatus(raw.status) ? raw.status : "partial",
-        totals: { sent: count(raw.totals?.sent), received: count(raw.totals?.received), unknown: count(raw.totals?.unknown) },
+        totals: { sent: count2(raw.totals?.sent), received: count2(raw.totals?.received), unknown: count2(raw.totals?.unknown) },
         people,
         daily: countMap(raw.daily),
         dailySent: countMap(raw.dailySent),
@@ -145,23 +204,32 @@ var HistoricalStore = class {
         coverage: {
           scope: "messages rendered in the selected conversation",
           complete: raw.coverage?.complete === true,
-          recordsProcessed: count(raw.coverage?.recordsProcessed),
+          recordsProcessed: count2(raw.coverage?.recordsProcessed),
           oldestTimestamp: finiteOrNull(raw.coverage?.oldestTimestamp),
           newestTimestamp: finiteOrNull(raw.coverage?.newestTimestamp),
           source: safeString(raw.coverage?.source, 80),
           startedAt: finiteOrNull(raw.coverage?.startedAt),
-          durationMs: count(raw.coverage?.durationMs),
-          encountered: count(raw.coverage?.encountered),
-          duplicatesIgnored: count(raw.coverage?.duplicatesIgnored),
-          batches: count(raw.coverage?.batches),
+          durationMs: count2(raw.coverage?.durationMs),
+          encountered: count2(raw.coverage?.encountered),
+          duplicatesIgnored: count2(raw.coverage?.duplicatesIgnored),
+          batches: count2(raw.coverage?.batches),
           stopReason: safeString(raw.coverage?.stopReason, 80),
           interrupted: raw.coverage?.interrupted === true
         },
-        updatedAt: count(raw.updatedAt),
+        updatedAt: count2(raw.updatedAt),
         ...raw.error ? { error: safeString(raw.error, 240) } : {}
       };
     }
-    return { version: ANALYTICS_SCHEMA_VERSION, conversations };
+    const reconciled = { version: ANALYTICS_SCHEMA_VERSION, conversations };
+    if (needsWrite) {
+      try {
+        this.write(reconciled);
+        this.lastError = null;
+      } catch (error) {
+        this.lastError = error;
+      }
+    }
+    return reconciled;
   }
   getConversation(conversationId) {
     const snapshot = this.snapshot();
@@ -240,7 +308,8 @@ var HistoricalStore = class {
     const state = this.snapshot();
     const entry = state.conversations[String(conversationId)];
     if (!entry) return;
-    const id = String(authorId);
+    const id = canonicalAuthorId(authorId);
+    if (!id) return;
     const values = new Set(entry.excludedAuthors);
     if (excluded) values.add(id);
     else values.delete(id);
@@ -283,7 +352,8 @@ var HistoricalStore = class {
     };
   }
   addRecord(entry, record) {
-    const authorId = record.authorId;
+    const authorId = canonicalAuthorId(record.authorId);
+    if (!authorId) return;
     const person = entry.people[authorId] || {
       authorId,
       name: record.authorName || authorId,
@@ -334,7 +404,7 @@ var HistoricalStore = class {
     }
   }
 };
-var count = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
+var count2 = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 var finiteOrNull = (value) => Number.isFinite(Number(value)) && value != null ? Number(value) : null;
 var safeString = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
 var safeAvatar = (value) => typeof value === "string" && /^https:\/\/[^\s]{1,500}$/.test(value) ? value : "";
@@ -354,15 +424,15 @@ var sanitizeCollection = (raw) => {
     lastSuccessfulUpdateAt: finiteOrNull(raw?.lastSuccessfulUpdateAt),
     lastOperationStatus: operation,
     lastMode: raw?.lastMode === "incremental" ? "incremental" : raw?.lastMode === "initial" ? "initial" : null,
-    attempts: count(raw?.attempts),
+    attempts: count2(raw?.attempts),
     interrupted: raw?.interrupted === true,
     stopReason: safeString(raw?.stopReason, 80),
     error: safeString(raw?.error, 240)
   };
 };
 var stringArray = (value, max) => Array.isArray(value) ? value.filter((x) => typeof x === "string").slice(-max) : [];
-var countMap = (value) => value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([key]) => /^\d{4}-\d{2}-\d{2}$/.test(key)).map(([key, n]) => [key, count(n)])) : {};
-var countArray = (value) => Array.isArray(value) ? Array.from({ length: 24 }, (_, i) => count(value[i])) : Array(24).fill(0);
+var countMap = (value) => value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([key]) => /^\d{4}-\d{2}-\d{2}$/.test(key)).map(([key, n]) => [key, count2(n)])) : {};
+var countArray = (value) => Array.isArray(value) ? Array.from({ length: 24 }, (_, i) => count2(value[i])) : Array(24).fill(0);
 var validStatus = (value) => ["ready", "collecting", "processing", "persisting", "completed", "partial", "cancelled", "failed"].includes(value);
 function minDate(current, values) {
   const valid = values.filter(Number.isFinite);
@@ -390,8 +460,8 @@ function normalizeMessages(sourceMessages, {
   return sourceMessages.flatMap((m) => {
     if (!m || typeof m !== "object") return [];
     const messageId = getMessageId(m);
-    const authorId = getAuthorId(m);
-    if (messageId == null || authorId == null) return [];
+    const authorId = canonicalAuthorId(getAuthorId(m));
+    if (messageId == null || !authorId) return [];
     const rawTimestamp = getTimestamp(m);
     let numericTimestamp = rawTimestamp == null ? null : typeof rawTimestamp === "number" ? rawTimestamp : Date.parse(rawTimestamp);
     if (typeof rawTimestamp === "number" && numericTimestamp > 0 && numericTimestamp < 1e12) numericTimestamp *= 1e3;
@@ -475,7 +545,7 @@ var CollectionCoordinator = class {
         this.store.markStatus(conversationId, "processing");
         const normalized = normalizeMessages(batch.records, {
           getMessageId: (m) => m.messageId ?? m.id ?? m.message_id,
-          getAuthorId: (m) => m.authorId ?? m.author_id ?? m.user_id ?? m.author?.id ?? (typeof m.author === "string" ? m.author : null),
+          getAuthorId: (m) => m.authorId ?? m.author_id ?? m.user_id ?? m.author?.id ?? null,
           getAuthorName: (m) => m.authorName ?? m.author?.username ?? m.author?.name ?? m.username ?? (typeof m.author === "string" ? m.author : ""),
           getAuthorUsername: (m) => m.authorUsername ?? m.username ?? m.author?.username ?? "",
           getAvatarUrl: (m) => m.avatarUrl ?? m.avatar_url ?? "",
@@ -572,19 +642,19 @@ var CollectionCoordinator = class {
 // src/core/analytics/time-series.js
 function groupDailyCounts(dailyCounts, granularity = "day", { since = null, until = null } = {}) {
   const groups = /* @__PURE__ */ new Map();
-  for (const [date, count2] of Object.entries(dailyCounts || {})) {
+  for (const [date, count3] of Object.entries(dailyCounts || {})) {
     const start = Date.parse(`${date}T00:00:00Z`);
     const end = start + 864e5 - 1;
     if (since != null && end < since || until != null && start > until) continue;
     const key = granularity === "month" ? date.slice(0, 7) : granularity === "week" ? isoWeek(date) : date;
-    groups.set(key, (groups.get(key) || 0) + count2);
+    groups.set(key, (groups.get(key) || 0) + count3);
   }
-  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([period, count2]) => ({ period, count: count2 }));
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([period, count3]) => ({ period, count: count3 }));
 }
 function busiestHour(hourlyCounts) {
   const values = Array.isArray(hourlyCounts) ? hourlyCounts : [];
-  const count2 = Math.max(0, ...values);
-  return count2 ? { hour: values.indexOf(count2), count: count2 } : null;
+  const count3 = Math.max(0, ...values);
+  return count3 ? { hour: values.indexOf(count3), count: count3 } : null;
 }
 function isoWeek(day) {
   const date = /* @__PURE__ */ new Date(`${day}T00:00:00Z`);
@@ -609,14 +679,14 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
       totals.received += conversation.totals.received;
       totals.unknown += conversation.totals.unknown || 0;
     }
-    conversation.hourly.forEach((count2, hour) => {
-      hourly[hour] += count2;
+    conversation.hourly.forEach((count3, hour) => {
+      hourly[hour] += count3;
     });
-    for (const [day, count2] of Object.entries(conversation.daily)) {
+    for (const [day, count3] of Object.entries(conversation.daily)) {
       const dayEnd = Date.parse(`${day}T23:59:59.999Z`);
       const dayStart = Date.parse(`${day}T00:00:00.000Z`);
       if (since != null && dayEnd < since || until != null && dayStart > until) continue;
-      daily.set(day, (daily.get(day) || 0) + count2);
+      daily.set(day, (daily.get(day) || 0) + count3);
       const inRange = (since == null || dayEnd >= since) && (until == null || dayStart <= until);
       if (inRange && (since != null || until != null)) {
         totals.sent += conversation.dailySent[day] || 0;
@@ -633,7 +703,7 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
         current.received += person.received;
         current.unknown += person.unknown || 0;
       } else {
-        for (const [day, count2] of Object.entries(person.daily || {})) {
+        for (const [day, count3] of Object.entries(person.daily || {})) {
           const start = Date.parse(`${day}T00:00:00.000Z`), end = start + 864e5 - 1;
           if (since != null && end < since || until != null && start > until) continue;
           current.sent += person.dailySent?.[day] || 0;
@@ -657,7 +727,7 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
       return result;
     }, {}),
     people: [...people.values()].sort((a, b) => b.received - a.received || a.name.localeCompare(b.name)),
-    daily: [...daily.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, count2]) => ({ date, count: count2 })),
+    daily: [...daily.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, count3]) => ({ date, count: count3 })),
     hourly,
     busiestHour: busiestHour(hourly),
     activity: groupDailyCounts(Object.fromEntries(daily), granularity),
@@ -681,12 +751,27 @@ function buildFrequentContacts(snapshot, { search = "", sort = "messages" } = {}
   const contacts = /* @__PURE__ */ new Map();
   for (const conversation of Object.values(snapshot?.conversations || {})) {
     for (const [authorId, person] of Object.entries(conversation.people || {})) {
+      const stableId = canonicalAuthorId(person.authorId ?? authorId);
+      if (!stableId) continue;
       const total = Number.isFinite(person.total) ? person.total : (person.sent || 0) + (person.received || 0) + (person.unknown || 0);
       if (total <= 0) continue;
-      const key = `${conversation.conversationId}\0${authorId}`;
+      const key = `${conversation.conversationId}\0${stableId}`;
+      const existing = contacts.get(key);
+      if (existing) {
+        existing.messageCount += total;
+        const incomingTimestamp = person.lastTimestamp || 0;
+        if (incomingTimestamp >= (existing.lastTimestamp || 0) && person.name) existing.displayName = person.name;
+        existing.lastTimestamp = Math.max(existing.lastTimestamp || 0, incomingTimestamp) || null;
+        if (incomingTimestamp >= (existing.lastTimestamp || 0) && person.username) existing.username = person.username;
+        if (incomingTimestamp >= (existing.lastTimestamp || 0) && person.avatarUrl) existing.avatarUrl = person.avatarUrl;
+        if (!existing.username && person.username) existing.username = person.username;
+        if (!existing.avatarUrl && person.avatarUrl) existing.avatarUrl = person.avatarUrl;
+        if (existing.displayName === String(existing.authorId) && person.name) existing.displayName = person.name;
+        continue;
+      }
       const contact = {
         key,
-        authorId: String(authorId),
+        authorId: stableId,
         conversationId: String(conversation.conversationId),
         displayName: person.name || String(authorId),
         username: person.username || "",
@@ -708,6 +793,17 @@ function buildFrequentContacts(snapshot, { search = "", sort = "messages" } = {}
 }
 
 // src/integrations/betterdiscord/rendered-history-adapter.js
+function extractRenderedAuthor(row) {
+  if (!row) return null;
+  const direct = row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id") || row.querySelector?.("[data-user-id], [data-author-id]")?.getAttribute?.("data-user-id") || row.querySelector?.("[data-user-id], [data-author-id]")?.getAttribute?.("data-author-id") || null;
+  const href = row.querySelector?.('a[href*="/users/"]')?.getAttribute?.("href") || row.querySelector?.('[href*="/users/"]')?.getAttribute?.("href") || "";
+  const avatar = row.querySelector?.('img[src*="/avatars/"]')?.getAttribute?.("src") || "";
+  const fromHref = href.match(/\/users\/(\d{5,})/)?.[1] || null;
+  const fromAvatar = avatar.match(/\/avatars\/(\d{5,})/)?.[1] || null;
+  const id = String(direct || fromHref || fromAvatar || "").trim();
+  if (!id || /^(null|undefined|unknown)$/i.test(id)) return null;
+  return { authorId: id, avatarUrl: avatar };
+}
 var RenderedHistoryAdapter = class {
   constructor({
     getSelectedConversation,
@@ -772,9 +868,10 @@ var RenderedHistoryAdapter = class {
     const records = rows.flatMap((row) => {
       const messageId = this.rowId(row);
       if (!messageId) return [];
-      const authorId = row.getAttribute("data-user-id") || row.querySelector('a[href*="/users/"]')?.getAttribute("href")?.match(/\/users\/(\d+)/)?.[1] || row.querySelector('img[src*="/avatars/"]')?.getAttribute("src")?.match(/\/avatars\/(\d+)/)?.[1];
-      if (!authorId) return [];
-      const avatarUrl = row.querySelector('img[src*="/avatars/"]')?.getAttribute("src") || "";
+      const identity = extractRenderedAuthor(row);
+      if (!identity) return [];
+      const authorId = identity.authorId;
+      const avatarUrl = identity.avatarUrl || "";
       const nameNode = row.querySelector('[class*="username"]');
       const authorName = nameNode?.textContent?.trim() || "";
       const authorUsername = row.getAttribute("data-username") || row.getAttribute("data-user-name") || nameNode?.getAttribute?.("data-username") || "";
@@ -1094,6 +1191,7 @@ var BarklyAccess = class {
     document.body.appendChild(p);
     this.panel = p;
     this.updatePanel();
+    this.refreshFrequent();
   }
   getSelectedConversation() {
     return getSelectedConversationId(window.location.pathname);
@@ -1190,18 +1288,18 @@ var BarklyAccess = class {
     if (!popup || this.collectionPopupConversation !== String(event.conversationId)) return;
     clearTimeout(this.collectionPopupTimeout);
     const terminal = event.phase === "finish";
-    const count2 = Number(event.processed || 0);
+    const count3 = Number(event.processed || 0);
     const stateText = terminal ? this.collectionPopupTerminalText(event) : event.phase === "start" ? "Starting initial backfill\u2026" : `Backfilling visible history \xB7 ${Number(event.batches || 0).toLocaleString()} batches processed`;
     popup.querySelector("[data-popup-conversation]").textContent = this.conversationLabel(event.conversationId);
     popup.querySelector("[data-popup-state]").textContent = stateText;
-    popup.querySelector("[data-popup-counts]").textContent = `${count2.toLocaleString()} new unique messages collected \xB7 ${Number(event.batches || 0).toLocaleString()} batches processed`;
+    popup.querySelector("[data-popup-counts]").textContent = `${count3.toLocaleString()} new unique messages collected \xB7 ${Number(event.batches || 0).toLocaleString()} batches processed`;
     const duplicateLine = popup.querySelector("[data-popup-duplicates]");
     duplicateLine.hidden = !event.duplicates;
     duplicateLine.textContent = event.duplicates ? `${Number(event.duplicates).toLocaleString()} duplicate messages ignored.` : "";
     popup.querySelector("[data-popup-cancel]").hidden = terminal;
     const now = Date.now();
     if (terminal || event.phase === "start" || now - this.collectionPopupLastAnnouncementAt >= 2500) {
-      popup.querySelector("[data-popup-announcement]").textContent = `${stateText} ${count2.toLocaleString()} unique messages collected in ${Number(event.batches || 0).toLocaleString()} batches.${event.duplicates ? ` ${Number(event.duplicates).toLocaleString()} duplicates ignored.` : ""}`;
+      popup.querySelector("[data-popup-announcement]").textContent = `${stateText} ${count3.toLocaleString()} unique messages collected in ${Number(event.batches || 0).toLocaleString()} batches.${event.duplicates ? ` ${Number(event.duplicates).toLocaleString()} duplicates ignored.` : ""}`;
       this.collectionPopupLastAnnouncementAt = now;
     }
     if (terminal) {
@@ -1380,15 +1478,15 @@ var BarklyAccess = class {
     } else {
       view.querySelector("[data-hour-note]").textContent = "Overall hourly distribution, in UTC.";
       const hourTotals = Array(24).fill(0);
-      analysisScope.forEach((item) => item.hourly.forEach((count2, hour) => hourTotals[hour] += count2));
-      this.fillTable(hours, hourTotals.map((count2, hour) => [`${String(hour).padStart(2, "0")}:00`, count2]));
+      analysisScope.forEach((item) => item.hourly.forEach((count3, hour) => hourTotals[hour] += count3));
+      this.fillTable(hours, hourTotals.map((count3, hour) => [`${String(hour).padStart(2, "0")}:00`, count3]));
     }
     const weekdayTotals = Array(7).fill(0);
-    summary.daily.forEach(({ date, count: count2 }) => {
+    summary.daily.forEach(({ date, count: count3 }) => {
       const day = Date.parse(`${date}T00:00:00.000Z`);
-      if (Number.isFinite(day)) weekdayTotals[new Date(day).getUTCDay()] += count2;
+      if (Number.isFinite(day)) weekdayTotals[new Date(day).getUTCDay()] += count3;
     });
-    this.fillTable(view.querySelector("[data-dashboard-weekdays]"), weekdayTotals.map((count2, day) => [new Date(Date.UTC(2023, 0, 1 + day)).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }), count2]));
+    this.fillTable(view.querySelector("[data-dashboard-weekdays]"), weekdayTotals.map((count3, day) => [new Date(Date.UTC(2023, 0, 1 + day)).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }), count3]));
     const peopleBody = view.querySelector("[data-dashboard-people]");
     peopleBody.replaceChildren();
     const pageSize = Number(view.querySelector('[data-filter="page-size"]').value) || 25;
@@ -1453,13 +1551,13 @@ var BarklyAccess = class {
       body.append(row);
       return;
     }
-    rows.forEach(([label, count2]) => {
+    rows.forEach(([label, count3]) => {
       const row = document.createElement("tr");
       const th = document.createElement("th");
       th.scope = "row";
       th.textContent = String(label);
       const td = document.createElement("td");
-      td.textContent = Number(count2 || 0).toLocaleString();
+      td.textContent = Number(count3 || 0).toLocaleString();
       row.append(th, td);
       body.append(row);
     });
@@ -1481,8 +1579,8 @@ var BarklyAccess = class {
     summary.textContent = `${totals.sent + totals.received + totals.unknown} total messages: ${totals.sent} sent, ${totals.received} received, ${totals.unknown} unknown direction. First recorded: ${Number.isFinite(totals.first) ? new Date(totals.first).toLocaleString() : "unavailable"}. Most recent: ${totals.last ? new Date(totals.last).toLocaleString() : "unavailable"}.`;
     const hours = Array(24).fill(0), days = /* @__PURE__ */ new Map();
     records.forEach((item) => {
-      item.hourly.forEach((count2, hour) => hours[hour] += count2);
-      Object.entries(item.daily).forEach(([day, count2]) => days.set(day, (days.get(day) || 0) + count2));
+      item.hourly.forEach((count3, hour) => hours[hour] += count3);
+      Object.entries(item.daily).forEach(([day, count3]) => days.set(day, (days.get(day) || 0) + count3));
     });
     const detail = document.createElement("p");
     detail.textContent = `Most active hour (UTC): ${hours.indexOf(Math.max(...hours))}:00 (${Math.max(...hours)} messages). Most active recorded day: ${[...days].sort((a, b) => b[1] - a[1])[0]?.join(" \u2014 ") || "unavailable"}.`;
@@ -1606,11 +1704,11 @@ var BarklyAccess = class {
       metadata.className = "ba-contact-meta";
       metadata.textContent = `${contact.messageCount.toLocaleString()} collected messages \xB7 ${contact.lastTimestamp ? `Last interaction ${new Date(contact.lastTimestamp).toLocaleString()}` : "No timestamp available"} \xB7 ${contact.conversationStatus} collection`;
       content.append(title, identity, metadata);
-      const count2 = document.createElement("strong");
-      count2.className = "ba-contact-count";
-      count2.textContent = contact.messageCount.toLocaleString();
-      count2.setAttribute("aria-label", `${contact.messageCount.toLocaleString()} collected messages`);
-      item.append(monogram, content, count2);
+      const count3 = document.createElement("strong");
+      count3.className = "ba-contact-count";
+      count3.textContent = contact.messageCount.toLocaleString();
+      count3.setAttribute("aria-label", `${contact.messageCount.toLocaleString()} collected messages`);
+      item.append(monogram, content, count3);
       if (!contact.href) {
         const fallback = document.createElement("p");
         fallback.className = "ba-contact-fallback";
@@ -1718,7 +1816,7 @@ var BarklyAccess = class {
     body.${this.classes.quiet} [class*="messageContent"] {line-height:1.65 !important;}
     body.${this.classes.quiet} [class*="channelTextArea"] {border:1px solid #ff4fa3 !important;}
     body.${this.classes.quiet} *:focus-visible {outline:2px solid #ff8bc5 !important;outline-offset:2px;}
-    #${this.panelId}{position:fixed;z-index:99999;top:14px;right:16px;width:238px;max-height:80vh;overflow:auto;background:#090909;color:#f1f1f1;border:1px solid #ff4fa3;border-radius:12px;box-shadow:0 8px 28px #0009;font:14px/1.45 sans-serif;}
+    #${this.panelId}{position:fixed;z-index:1000002;top:14px;right:16px;width:min(280px,calc(100vw - 32px));max-height:calc(100vh - 28px);overflow-y:auto;display:block;background:#090909;color:#f1f1f1;border:1px solid #ff4fa3;border-radius:12px;box-shadow:0 8px 28px #0009;font:14px/1.45 sans-serif;}
     #${this.panelId} button{display:block;width:100%;text-align:left;background:#101010;color:#f1f1f1;border:1px solid #444;border-radius:8px;padding:9px 10px;margin:6px 0;cursor:pointer;}
     #${this.panelId} button:focus-visible{outline:3px solid #ff8bc5;outline-offset:2px;}
     #${this.panelId} .ba-main{font-weight:700;background:#ff4fa3;color:#090909;border:0;margin:0;display:flex;justify-content:space-between;}
@@ -1752,7 +1850,7 @@ var BarklyAccess = class {
     .ba-collection-popup button:hover{background:#ff9bc9;}
     .ba-collection-popup button:focus-visible{outline:3px solid #fff;outline-offset:3px;}
     .ba-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;}
-    @media(max-width:520px){.ba-collection-popup{right:12px;bottom:12px;width:calc(100vw - 24px);}}
+    @media(max-width:520px){#${this.panelId}{top:8px;right:8px;width:calc(100vw - 16px);max-height:calc(100vh - 16px)}.ba-collection-popup{right:12px;bottom:12px;width:calc(100vw - 24px);}}
     @media(prefers-reduced-motion:reduce){.ba-collection-popup{scroll-behavior:auto!important;animation:none!important;transition:none!important;}}
     #ba-analytics-dashboard{position:fixed;inset:0;z-index:1000000;overflow:auto;background:#0e0b0e;color:#f5eef2;font:16px/1.55 system-ui,sans-serif;padding:clamp(16px,3vw,44px);--ba-accent:#ff69ad;--ba-panel:#171217;}
     #ba-analytics-dashboard[hidden]{display:none;}

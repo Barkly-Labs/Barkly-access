@@ -4,6 +4,23 @@ import { getConversationHref } from "./conversation-selection.js";
  * Backfills only message rows currently exposed by Discord's visible interface.
  * It intentionally does not read Discord's private stores or call its APIs.
  */
+export function extractRenderedAuthor(row) {
+  if (!row) return null;
+  const direct = row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id")
+    || row.querySelector?.('[data-user-id], [data-author-id]')?.getAttribute?.("data-user-id")
+    || row.querySelector?.('[data-user-id], [data-author-id]')?.getAttribute?.("data-author-id")
+    || null;
+  const href = row.querySelector?.('a[href*="/users/"]')?.getAttribute?.("href")
+    || row.querySelector?.('[href*="/users/"]')?.getAttribute?.("href")
+    || "";
+  const avatar = row.querySelector?.('img[src*="/avatars/"]')?.getAttribute?.("src") || "";
+  const fromHref = href.match(/\/users\/(\d{5,})/)?.[1] || null;
+  const fromAvatar = avatar.match(/\/avatars\/(\d{5,})/)?.[1] || null;
+  const id = String(direct || fromHref || fromAvatar || "").trim();
+  if (!id || /^(null|undefined|unknown)$/i.test(id)) return null;
+  return { authorId: id, avatarUrl: avatar };
+}
+
 export class RenderedHistoryAdapter {
   constructor({ getSelectedConversation, getCurrentUserId, getDocument = () => document,
     getConversationPath = () => globalThis.location?.pathname || "",
@@ -57,11 +74,10 @@ export class RenderedHistoryAdapter {
     const records = rows.flatMap(row => {
       const messageId = this.rowId(row);
       if (!messageId) return [];
-      const authorId = row.getAttribute("data-user-id")
-        || row.querySelector('a[href*="/users/"]')?.getAttribute("href")?.match(/\/users\/(\d+)/)?.[1]
-        || row.querySelector('img[src*="/avatars/"]')?.getAttribute("src")?.match(/\/avatars\/(\d+)/)?.[1];
-      if (!authorId) return [];
-      const avatarUrl = row.querySelector('img[src*="/avatars/"]')?.getAttribute("src") || "";
+      const identity = extractRenderedAuthor(row);
+      if (!identity) return [];
+      const authorId = identity.authorId;
+      const avatarUrl = identity.avatarUrl || "";
       const nameNode = row.querySelector('[class*="username"]');
       const authorName = nameNode?.textContent?.trim() || "";
       const authorUsername = row.getAttribute("data-username") || row.getAttribute("data-user-name")

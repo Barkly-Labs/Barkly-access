@@ -39,6 +39,15 @@ test("normalizer omits message body", () => {
   assert.equal("attachments" in normalized[0], false);
 });
 
+test("normalizer rejects missing stable identities and canonicalizes whitespace", () => {
+  const normalized = normalizeMessages([
+    { id: "1", authorId: " 123 " },
+    { id: "2", authorId: "unknown" },
+    { id: "3", authorId: "" },
+  ]);
+  assert.deepEqual(normalized.map(record => record.authorId), ["123"]);
+});
+
 test("ignores malformed records", () => {
   const engine = new AggregationEngine();
   assert.equal(engine.processBatch([null, {}, { messageId: "1" }]).added, 0);

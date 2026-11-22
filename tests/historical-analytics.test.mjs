@@ -4,7 +4,7 @@ import { HistoricalStore } from "../src/core/storage/historical-store.js";
 import { summarizeAnalytics } from "../src/core/analytics/statistics-engine.js";
 import { CollectionCoordinator } from "../src/core/collection/collection-coordinator.js";
 import { collectionModeFor } from "../src/core/collection/collection-state.js";
-import { RenderedHistoryAdapter } from "../src/integrations/betterdiscord/rendered-history-adapter.js";
+import { RenderedHistoryAdapter, extractRenderedAuthor } from "../src/integrations/betterdiscord/rendered-history-adapter.js";
 import { getSelectedConversationId } from "../src/integrations/betterdiscord/conversation-selection.js";
 import { groupDailyCounts, busiestHour } from "../src/core/analytics/time-series.js";
 
@@ -34,6 +34,34 @@ test("historical store aggregates direction and time while persisting no raw mes
   const serialized = JSON.stringify(read());
   assert.equal(serialized.includes("private body"), false);
   assert.equal(serialized.includes("raw-msg-1"), false);
+});
+
+test("storage canonicalizes and reconciles duplicate person keys without merging distinct users", () => {
+  let data = { version: 1, conversations: { "100": {
+    conversationId: "100", navigationPath: "/channels/@me/100", people: {
+      " u1 ": { authorId: " u1 ", name: "Old Name", username: "old", total: 2, sent: 2, received: 0, unknown: 0, daily: { "2026-01-01": 2 } },
+      u1: { authorId: "u1", name: "New Name", username: "new", total: 3, sent: 1, received: 2, unknown: 0, daily: { "2026-01-02": 3 } },
+      u2: { authorId: "u2", name: "New Name", total: 1, sent: 0, received: 1, unknown: 0 },
+    }, totals: { sent: 3, received: 3, unknown: 0 }
+  } } };
+  const store = new HistoricalStore({ load: () => data, save: next => { data = structuredClone(next); } });
+  const entry = store.getConversation("100");
+  assert.equal(Object.keys(entry.people).length, 2);
+  assert.equal(entry.people.u1.total, 5);
+  assert.equal(entry.people.u1.sent, 3);
+  assert.equal(entry.people.u1.received, 2);
+  assert.equal(entry.people.u1.name, "New Name");
+  assert.equal(entry.people.u2.total, 1);
+
+  store.applyBatch("100", [{ messageId: "new-1", authorId: "u1", authorName: "Latest Name", timestamp: Date.UTC(2026, 0, 3), isSelf: true }]);
+  store.applyBatch("100", [{ messageId: "new-1", authorId: " u1 ", authorName: "Latest Name", timestamp: Date.UTC(2026, 0, 3), isSelf: true }]);
+  const repeated = store.getConversation("100");
+  assert.equal(repeated.people.u1.total, 6);
+  assert.equal(repeated.people.u1.name, "Latest Name");
+  assert.equal(repeated.people.u2.total, 1);
+
+  store.applyBatch("100", [{ messageId: "missing-author", authorId: "", authorName: "Nobody", timestamp: Date.UTC(2026, 0, 4), isSelf: false }]);
+  assert.equal(store.getConversation("100").totals.received, 3);
 });
 
 test("store clears one conversation or all saved statistics", () => {
@@ -200,6 +228,21 @@ test("incomplete and interrupted initial attempts remain retryable and independe
   assert.equal(store.getConversation("a").collection.attempts, 2);
   assert.equal(store.getConversation("b").collection.attempts, 1);
   assert.notEqual(store.getConversation("a").conversationId, store.getConversation("b").conversationId);
+});
+
+test("rendered author extraction supports stable links and ignores missing identities", () => {
+  const row = {
+    getAttribute: name => name === "data-author-id" ? " 123456789012345678 " : null,
+    querySelector: () => null,
+  };
+  assert.equal(extractRenderedAuthor(row).authorId, "123456789012345678");
+  const missing = { getAttribute: () => null, querySelector: () => null };
+  assert.equal(extractRenderedAuthor(missing), null);
+  const linkRow = {
+    getAttribute: () => null,
+    querySelector: selector => selector.includes("/users/") ? { getAttribute: () => "https://discord.com/users/987654321098765432" } : null,
+  };
+  assert.equal(extractRenderedAuthor(linkRow).authorId, "987654321098765432");
 });
 
 test("rendered adapter reads only the selected conversation's rendered message metadata", async () => {

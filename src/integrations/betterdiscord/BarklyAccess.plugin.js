@@ -83,7 +83,7 @@ export default class BarklyAccess {
     const controlSize=p.querySelector('#ba-control-size');controlSize.value=this.state.controlSize||'normal';controlSize.addEventListener('change',()=>{this.state.controlSize=controlSize.value==='large'?'large':'normal';this.apply();this.save();});
     const density=p.querySelector('#ba-density');density.value=this.state.density||'comfortable';density.addEventListener('change',()=>{this.state.density=density.value==='compact'?'compact':'comfortable';this.apply();this.save();});
     p.querySelector('.ba-tabs').addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;const tabs=[...p.querySelectorAll('[data-tab]')];const index=tabs.indexOf(document.activeElement);if(index<0)return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:event.key==='ArrowRight'?(index+1)%tabs.length:(index-1+tabs.length)%tabs.length;tabs[next].focus();tabs[next].click();});
-    document.body.appendChild(p);this.panel=p;this.updatePanel();
+    document.body.appendChild(p);this.panel=p;this.updatePanel();this.refreshFrequent();
   }
   getSelectedConversation(){
     return getSelectedConversationId(window.location.pathname);
@@ -336,7 +336,7 @@ export default class BarklyAccess {
     body.${this.classes.quiet} [class*="messageContent"] {line-height:1.65 !important;}
     body.${this.classes.quiet} [class*="channelTextArea"] {border:1px solid #ff4fa3 !important;}
     body.${this.classes.quiet} *:focus-visible {outline:2px solid #ff8bc5 !important;outline-offset:2px;}
-    #${this.panelId}{position:fixed;z-index:99999;top:14px;right:16px;width:238px;max-height:80vh;overflow:auto;background:#090909;color:#f1f1f1;border:1px solid #ff4fa3;border-radius:12px;box-shadow:0 8px 28px #0009;font:14px/1.45 sans-serif;}
+    #${this.panelId}{position:fixed;z-index:1000002;top:14px;right:16px;width:min(280px,calc(100vw - 32px));max-height:calc(100vh - 28px);overflow-y:auto;display:block;background:#090909;color:#f1f1f1;border:1px solid #ff4fa3;border-radius:12px;box-shadow:0 8px 28px #0009;font:14px/1.45 sans-serif;}
     #${this.panelId} button{display:block;width:100%;text-align:left;background:#101010;color:#f1f1f1;border:1px solid #444;border-radius:8px;padding:9px 10px;margin:6px 0;cursor:pointer;}
     #${this.panelId} button:focus-visible{outline:3px solid #ff8bc5;outline-offset:2px;}
     #${this.panelId} .ba-main{font-weight:700;background:#ff4fa3;color:#090909;border:0;margin:0;display:flex;justify-content:space-between;}
@@ -370,7 +370,7 @@ export default class BarklyAccess {
     .ba-collection-popup button:hover{background:#ff9bc9;}
     .ba-collection-popup button:focus-visible{outline:3px solid #fff;outline-offset:3px;}
     .ba-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;}
-    @media(max-width:520px){.ba-collection-popup{right:12px;bottom:12px;width:calc(100vw - 24px);}}
+    @media(max-width:520px){#${this.panelId}{top:8px;right:8px;width:calc(100vw - 16px);max-height:calc(100vh - 16px)}.ba-collection-popup{right:12px;bottom:12px;width:calc(100vw - 24px);}}
     @media(prefers-reduced-motion:reduce){.ba-collection-popup{scroll-behavior:auto!important;animation:none!important;transition:none!important;}}
     #ba-analytics-dashboard{position:fixed;inset:0;z-index:1000000;overflow:auto;background:#0e0b0e;color:#f5eef2;font:16px/1.55 system-ui,sans-serif;padding:clamp(16px,3vw,44px);--ba-accent:#ff69ad;--ba-panel:#171217;}
     #ba-analytics-dashboard[hidden]{display:none;}

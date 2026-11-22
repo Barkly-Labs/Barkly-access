@@ -85,6 +85,21 @@ test("collected identities, counts, usernames, and route persist and reconcile a
   assert.equal(contacts[0].href, "/channels/@me/100");
 });
 
+test("Frequent reconciliation keeps stable identities and never merges identical names", () => {
+  const snapshot = { conversations: { "100": { conversationId: "100", navigationPath: "/channels/@me/100", people: {
+    "u1": { authorId: "u1", name: "Alex", username: "alex-old", avatarUrl: "https://cdn.discordapp.com/avatars/u1/old.png", total: 2, lastTimestamp: time(2) },
+    " u1 ": { authorId: " u1 ", name: "Alex New", username: "alex-new", avatarUrl: "https://cdn.discordapp.com/avatars/u1/new.png", total: 3, lastTimestamp: time(4) },
+    "u2": { authorId: "u2", name: "Alex", username: "alex-two", total: 1, lastTimestamp: time(3) },
+  } } } };
+  const rows = buildFrequentContacts(snapshot);
+  const alexes = rows.filter(row => row.displayName.startsWith("Alex"));
+  assert.equal(rows.filter(row => row.authorId === "u1").length, 1);
+  assert.equal(rows.find(row => row.authorId === "u1").messageCount, 5);
+  assert.equal(rows.find(row => row.authorId === "u2").messageCount, 1);
+  assert.equal(alexes.length, 2);
+  assert.equal(rows.some(row => row.authorId === "unknown"), false);
+});
+
 test("missing or stale conversation route produces an explicit navigation fallback", () => {
   const snapshot = { conversations: { "42": { conversationId: "42", navigationPath: null, people: {
     "person-id": { name: "Pat", total: 2 },

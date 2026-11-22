@@ -34,6 +34,10 @@ test("build emits a standalone BetterDiscord plugin with metadata and bundled fe
   assert.match(output, /Other Participant's Messages/);
   assert.match(output, /Compare Activity/);
   assert.match(output, /ba-control-size/);
+  assert.match(output, /extractRenderedAuthor/);
+  assert.match(output, /canonicalAuthorId/);
+  assert.match(output, /z-index:1000002/);
+  assert.match(output, /this\.refreshFrequent\(\)/);
   assert.match(output, /incremental-visible-batch/);
   assert.doesNotMatch(output, /require\(["'](?:esbuild|\.\.\/\.\.\/core)/);
   const module = { exports: {} };
