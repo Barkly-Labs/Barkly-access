@@ -1,23 +1,15 @@
-# BetterDiscord experimental adapter
+# Barkly Access · BetterDiscord adapter
 
-Experimental Discord client modification; client mods may violate Discord's Terms and carry account risk. Discord's internal selectors are unstable.
+Experimental client-mod adapter for cognitive decluttering. The goal is progressive disclosure: a single Quiet View toggle, with optional controls tucked away and a one-step restore. This is not officially supported by Discord and client selectors may break.
 
-## Barkly Access 0.2.0 — declutter controls
+- `Ctrl+Shift+F`: toggle Quiet View
+- `Ctrl+Shift+R`: restore view
+- Quiet View applies spacing and hides selected peripheral areas; content/messages are not filtered. The control panel exposes individual restore switches.
 
-The floating Barkly Access control panel provides independent, reversible controls:
+PAW-HC: reversible, user-directed, dignity-preserving; WCAG checks still need manual testing in the client.
 
-- Focus mode: hides member list, increases message spacing and line-height, highlights composer and keyboard focus.
-- Channel list: hide/show the channel sidebar (selector is experimental).
-- Member list: hide/show members.
-- Server rail: hide/show server navigation.
-- Chat header: hide/show toolbar controls.
-- Restore everything: returns all regions to visible and exits focus mode.
+## Readable chat layout (0.4 experimental)
 
-Keyboard shortcuts:
-- `Ctrl+Shift+F`: toggle focus mode.
-- `Ctrl+Shift+R`: restore all areas and exit focus mode.
+The **Readable chat layout** toggle adds a restrained message hierarchy: extra vertical space between message rows, a readable measure for message text, quieter timestamp styling, and clearer reply/embed presentation. It does not filter, summarize, or remove message content. Toggle it independently from Quiet View.
 
-Preferences are stored locally via BetterDiscord's data API. Hidden areas are not deleted; they can be restored through the control panel or shortcut. Verify selectors and usability in your client before relying on them.
-
-## Install
-Copy `BarklyAccess.plugin.js` into BetterDiscord's plugin directory and enable it. BetterDiscord is unofficial and unsupported by Discord.
+This relies on Discord's internal CSS class names, which are unstable. Validate selectors and keyboard/screen-reader behavior in the live client before relying on them.
