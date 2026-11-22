@@ -10,10 +10,13 @@ module.exports = class BarklyAccess {
     this.panelId = 'barkly-access-panel';
     this.state = { quiet: false, layout: false, numbered: false, showMembers: false, showChannels: false, showToolbar: false };
     this.classes = { quiet: 'ba-quiet', layout: 'ba-readable-layout', numbered: 'ba-numbered-chat', members: 'ba-hide-members', channels: 'ba-hide-channels', toolbar: 'ba-hide-toolbar' };
+    this.chunkClasses = ['ba-chunk-start','ba-chunk-middle','ba-chunk-end','ba-chunk-single'];
   }
   start() {
     this.state = Object.assign(this.state, BdApi.Data.load('BarklyAccess', 'state') || {});
-    this.apply(); this.createPanel();
+    this.apply(); this.createPanel(); this.groupMessages();
+    this.chunkObserver = new MutationObserver(() => this.groupMessages());
+    this.chunkObserver.observe(document.querySelector('[class*=scrollerInner]') || document.body, { childList:true, subtree:true });
     this.onKeyDown = e => {
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); this.toggleQuiet(); }
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); this.restore(); }
@@ -43,22 +46,33 @@ module.exports = class BarklyAccess {
     document.body.appendChild(p);this.panel=p;this.updatePanel();
   }
   updatePanel(){ if(!this.panel)return; this.panel.querySelectorAll('[data-action]').forEach(b=>{const k=b.dataset.action;if(k==='restore')return;const on=k==='quiet'?this.state.quiet:this.state[k];b.setAttribute('aria-pressed',String(!!on));b.classList.toggle('ba-on',!!on);const labels={quiet:'Quiet view',layout:'Readable chat layout',numbered:'Conversation cards',showMembers:'Member list',showChannels:'Channel list',showToolbar:'Chat toolbar'};b.textContent=(k==='quiet'||k==='layout'||k==='numbered')?`${labels[k]} · ${on?'On':'Off'}`:`${labels[k]} · ${on?'Shown':'Hidden'}`;});}
-  stop(){document.removeEventListener('keydown',this.onKeyDown,true);Object.values(this.classes).forEach(c=>document.body.classList.remove(c));BdApi.DOM.removeStyle(this.styleId);document.getElementById(this.panelId)?.remove();}
+  stop(){document.removeEventListener('keydown',this.onKeyDown,true);this.chunkObserver?.disconnect();document.querySelectorAll('[class*=messageListItem]').forEach(n=>this.chunkClasses.forEach(c=>n.classList.remove(c)));Object.values(this.classes).forEach(c=>document.body.classList.remove(c));BdApi.DOM.removeStyle(this.styleId);document.getElementById(this.panelId)?.remove();}
+  groupMessages(){
+    const root=document.querySelector('[class*=scrollerInner]'); if(!root)return;
+    const nodes=[...root.querySelectorAll('[class*=messageListItem]')]; if(!nodes.length)return;
+    const readTime=n=>{const t=n.querySelector('time');if(t){const d=t.dateTime?new Date(t.dateTime):new Date(t.textContent);if(!Number.isNaN(d.getTime()))return d.getTime();}return null;};
+    let group=0,prevTime=null,prevNode=null,members=[];
+    const finish=()=>{if(!members.length)return;members.forEach((n,i)=>{this.chunkClasses.forEach(c=>n.classList.remove(c));n.classList.add(members.length===1?'ba-chunk-single':i===0?'ba-chunk-start':i===members.length-1?'ba-chunk-end':'ba-chunk-middle');});members=[];};
+    nodes.forEach(n=>{const t=readTime(n);const gap=(t!==null&&prevTime!==null)?t-prevTime:null;const split=!prevNode||gap===null||gap<0||gap>15*60*1000;if(split){finish();group++;}members.push(n);prevNode=n;prevTime=t;});finish();
+  }
   css(){return `
-    /* Readable layout: hierarchy and grouping, without hiding message content. */
-    /* Conversation cards: message content is grouped into a clear, numbered card. Experimental selectors. */
-    body.${this.classes.numbered} [class*='scrollerInner'] {counter-reset: barkly-message;}
-    body.${this.classes.numbered} [class*='messageListItem'] {counter-increment: barkly-message; position:relative; margin:14px 12px !important; padding:16px 18px 16px 62px !important; border:1px solid #292929; border-left:4px solid #ff4fa3; border-radius:16px; background:linear-gradient(110deg,#151015,#101010 42%); min-height:72px; box-shadow:0 2px 8px #0003;}
-    body.${this.classes.numbered} [class*='messageListItem']::before {content:counter(barkly-message); position:absolute; left:16px; top:16px; display:flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:10px; background:#ff4fa3; color:#090909; font-weight:800; font-size:14px; box-shadow:0 0 0 3px #ff4fa322;}
-    body.${this.classes.numbered} [class*='messageListItem']:hover {border-color:#ff8bc5; background:linear-gradient(110deg,#1b1018,#121212 42%);}
+    /* Numbered conversation chunks: group nearby messages into a cohesive unit. */
+    body.${this.classes.numbered} [class*='scrollerInner'] {counter-reset:barkly-chunk;}
+    body.${this.classes.numbered} [class*='messageListItem'] {position:relative; margin:0 12px !important; padding:12px 18px 12px 62px !important; background:#101010; border-left:3px solid #ff4fa3; border-right:1px solid #292929; min-height:64px; box-shadow:none;}
+    body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-start, body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-single {counter-increment:barkly-chunk; margin-top:14px !important; border-top:1px solid #292929; border-radius:16px 16px 0 0; background:linear-gradient(110deg,#151015,#101010 42%);}
+    body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-start::before, body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-single::before {content:counter(barkly-chunk); position:absolute; left:16px; top:16px; display:flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:10px; background:#ff4fa3; color:#090909; font-weight:800; font-size:14px;}
+    body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-middle, body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-end {border-top:1px solid #292929; background:#101010;}
+    body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-end, body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-single {border-bottom:1px solid #292929; border-radius:0 0 16px 16px; margin-bottom:14px !important;}
+    body.${this.classes.numbered} [class*='messageListItem'].ba-chunk-single {border-radius:16px;}
+    body.${this.classes.numbered} [class*='messageListItem']:hover {background:#171217;}
     body.${this.classes.numbered} [class*='messageListItem'] [class*='contents'] {min-width:0;}
-    body.${this.classes.numbered} [class*='messageContent'] {line-height:1.7; max-width:72ch; overflow-wrap:anywhere;}
-    body.${this.classes.numbered} [class*='messageListItem'] [class*='header'] {display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; margin-bottom:6px;}
+    body.${this.classes.numbered} [class*='messageContent'] {line-height:1.65; max-width:72ch; overflow-wrap:anywhere;}
+    body.${this.classes.numbered} [class*='messageListItem'] [class*='header'] {display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; margin-bottom:5px;}
     body.${this.classes.numbered} [class*='messageListItem'] [class*='avatar'] {border-radius:12px;}
     body.${this.classes.numbered} [class*='messageListItem'] [class*='markup'] p {margin-block:4px;}
     body.${this.classes.numbered} [class*='messageListItem'] [class*='attachment'], body.${this.classes.numbered} [class*='messageListItem'] [class*='embed'] {margin-top:10px; border-radius:12px;}
     body.${this.classes.numbered} [class*='messageListItem'] [class*='repliedMessage'] {border-left:3px solid #ff8bc5; border-radius:6px; padding:6px 10px; margin-bottom:8px; background:#ff4fa308;}
-    body.${this.classes.numbered} [class*='timestamp'] {opacity:.7; font-size:.82em;}
+    body.${this.classes.numbered} [class*='timestamp'] {opacity:.68; font-size:.82em;}
     body.${this.classes.layout} [class*="messageListItem"] {padding-block:8px !important;}
     body.${this.classes.layout} [class*="messageContent"] {line-height:1.6 !important;max-width:78ch;}
     body.${this.classes.layout} [class*="messageListItem"] [class*="avatar"] {margin-top:3px;}

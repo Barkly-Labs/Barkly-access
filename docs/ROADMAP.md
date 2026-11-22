@@ -15,3 +15,11 @@
 - [ ] Catch Me Up using sample/local data only
 - [ ] Clear source-message/context affordances
 - [ ] User testing with disabled participants
+
+
+## Cognitive chat simplification (prototype)
+- [x] Quiet View / progressive disclosure control
+- [x] Reversible peripheral UI hiding
+- [ ] Contextual thread/reply clarity
+- [ ] User testing with disabled participants
+- [ ] Verify keyboard, screen-reader and contrast behavior in client
