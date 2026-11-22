@@ -1,17 +1,23 @@
 # BetterDiscord experimental adapter
 
-This is an experimental, platform-specific integration for the Barkly Access project. It is intentionally kept inside `src/integrations/betterdiscord/`, alongside the project’s core/source assets, rather than as a separate top-level project.
+Experimental Discord client modification; client mods may violate Discord's Terms and carry account risk. Discord's internal selectors are unstable.
 
-Client modifications may violate Discord's Terms of Service and can carry account risk. This adapter is experimental and uses unstable client selectors. Use at your own discretion.
+## Barkly Access 0.2.0 — declutter controls
 
-## Focus Mode (0.1.0)
+The floating Barkly Access control panel provides independent, reversible controls:
 
-- Toggle with `Ctrl+Shift+F`.
-- Hide the member list.
-- Increase message spacing and line-height.
-- Highlight the message composer with Barkly pink.
-- Restore styles when toggled off or the plugin is stopped.
+- Focus mode: hides member list, increases message spacing and line-height, highlights composer and keyboard focus.
+- Channel list: hide/show the channel sidebar (selector is experimental).
+- Member list: hide/show members.
+- Server rail: hide/show server navigation.
+- Chat header: hide/show toolbar controls.
+- Restore everything: returns all regions to visible and exits focus mode.
+
+Keyboard shortcuts:
+- `Ctrl+Shift+F`: toggle focus mode.
+- `Ctrl+Shift+R`: restore all areas and exit focus mode.
+
+Preferences are stored locally via BetterDiscord's data API. Hidden areas are not deleted; they can be restored through the control panel or shortcut. Verify selectors and usability in your client before relying on them.
 
 ## Install
-
-For a BetterDiscord installation that supports plugins, copy `BarklyAccess.plugin.js` into its plugin folder and enable it in the client. Client modifications are unsupported by Discord.
+Copy `BarklyAccess.plugin.js` into BetterDiscord's plugin directory and enable it. BetterDiscord is unofficial and unsupported by Discord.

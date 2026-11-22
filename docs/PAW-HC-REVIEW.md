@@ -1,8 +1,10 @@
-# PAW-HC Review — Focus Mode 0.1.0
+# PAW-HC Review — Focus Mode and declutter controls 0.2.0
 
-- **User choice:** Focus mode is toggled manually and can be turned off.
-- **Reversibility:** Styles are removed when the mode is toggled off or plugin stopped.
-- **No content interpretation:** The module does not infer message meaning or urgency.
-- **Visual identity:** Barkly pink accents (`#ff4fa3`, `#ff8bc5`) and high-contrast focus outline.
-- **Known limitation:** Hiding the member list may reduce access to functions within it. Focus mode should be tested with users and selectors are fragile.
-- **Platform risk:** Client mods may violate Discord's terms and are not officially supported.
+- **User choice:** all hiding controls are opt-in and independently toggled.
+- **Reversibility:** panel controls and Ctrl+Shift+R restore all hidden regions; stopping the plugin removes its styles and UI.
+- **No content interpretation:** the plugin does not infer message meaning, tone or urgency.
+- **Visual identity:** Barkly palette (`#090909`, `#101010`, `#ff4fa3`, `#ff8bc5`, off-white) is used for plugin controls and focus indicators.
+- **Keyboard access:** buttons have focus indicators and shortcut controls are documented.
+- **Privacy:** preference state is stored using BetterDiscord local data storage; no network calls or message-content collection.
+- **Known limitations:** Discord selectors are unstable and sidebar/header selectors may need adaptation; test with keyboard and screen readers, and verify contrast. This is not a WCAG conformance claim.
+- **Platform risk:** client mods may violate Discord's terms and may risk account action.

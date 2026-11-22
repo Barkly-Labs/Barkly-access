@@ -1,38 +1,17 @@
 # Roadmap
 
-## Phase 0 — Product framing
-- [x] Define purpose and principles
-- [x] Identify initial feature: Catch Me Up
-- [ ] Collect user stories and co-design feedback
-- [ ] Review Discord policies and supported integration paths
+## 0.2.0 — Experimental declutter controls
+- [x] Modular integration folder retained under `src/integrations/betterdiscord/`
+- [x] Floating Barkly Access control panel
+- [x] Independent hide/show for channel list, members, server rail and chat header
+- [x] Focus mode styling and keyboard shortcut
+- [x] Restore all shortcut/control
+- [x] Persist preferences locally
+- [ ] Verify selectors against a Discord test client
+- [ ] Keyboard and screen-reader test pass
+- [ ] PAW-HC user review
 
-## Phase 1 — Data-free prototype
-- [ ] Create mock server/channel activity data
-- [ ] Build Catch Me Up interface
-- [ ] Show unread activity, direct involvement, and optional items separately
-- [ ] Add controls for dismissing, expanding, and correcting summaries
-- [ ] Test with keyboard and screen readers
-
-## Phase 2 — Accessibility testing
-- [ ] Recruit voluntary disabled-user feedback
-- [ ] Test cognitive load, navigation, readability, and error recovery
-- [ ] Document findings and revisions
-
-## Phase 3 — Integration research
-- [ ] Confirm platform-supported options and policy constraints
-- [ ] Privacy and threat-model review
-- [ ] Design connector only after policy review
-
-## Future modules
-- Focus mode
-- Notification digest
-- Context recovery
-- Reading assist
-- Navigation assist
-- Profile manager
-
-## BetterDiscord experiment
-
-- [x] Place experimental Focus Mode adapter in `src/integrations/betterdiscord/`.
-- [ ] Validate selector behavior in a test environment and document limitations.
-- [ ] Review compatibility, policy, and PAW-HC concerns before expanding features.
+## 0.3.0 — Context recovery prototype
+- [ ] Catch Me Up using sample/local data only
+- [ ] Clear source-message/context affordances
+- [ ] User testing with disabled participants

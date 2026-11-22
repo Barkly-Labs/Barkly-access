@@ -6,38 +6,29 @@
 
 ## Project status
 
-Early concept / prototype with an experimental BetterDiscord adapter under `src/integrations/betterdiscord/`. Discord client modifications may violate Discord's Terms and may risk account action; the adapter is experimental and unsupported.
+Early prototype with an experimental BetterDiscord adapter in `src/integrations/betterdiscord/`. Discord client modifications are unofficial, may violate Discord's Terms, and can carry account risk. The integration is experimental and relies on unstable UI selectors.
 
-## Initial MVP: Catch Me Up
+## Current experiment: reversible decluttering (0.2.0)
 
-- Summarize activity since a person's last visit (in a prototype, using sample data).
-- Highlight messages that mention or directly involve them.
-- Separate actionable items from optional updates.
-- Preserve links to the original messages in the eventual integration.
-- Give the user control over summaries and what gets surfaced.
+- Floating Barkly Access control panel with independent toggles for focus mode, channel list, member list, server rail and chat header.
+- Restore everything button and `Ctrl+Shift+R` shortcut.
+- `Ctrl+Shift+F` toggles focus mode.
+- Preferences saved locally using BetterDiscord data API.
+- No message-content collection or network calls.
 
-## Principles
+## PAW-HC principles
 
 1. User control and opt-in defaults.
-2. Preserve original context; summaries are not authoritative.
-3. Don't infer intent, emotions, or urgency without evidence.
+2. Preserve context and functionality; hidden areas are reversible.
+3. Don't infer intent, emotions, or urgency.
 4. Minimize data collection and retention.
 5. Respect platform rules and privacy boundaries.
 6. Co-design and test with disabled users.
 7. Features should be modular and individually disableable.
 
-## Proposed modules
-
-- `focus-mode`: configurable decluttering
-- `notification-digest`: grouped activity summaries
-- `context-recovery`: resume where the user left off
-- `reading-assist`: readable text/layout preferences
-- `navigation-assist`: shortcuts and reduced interaction steps
-- `profile-manager`: editable accessibility presets
-
 ## Development
 
-The initial prototype and plugin have no project-managed runtime dependencies. Review `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, and `docs/PAW-HC-REVIEW.md`. The BetterDiscord adapter is located in `src/integrations/betterdiscord/`.
+Review `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, and `docs/PAW-HC-REVIEW.md`. Prototype assets live in `prototype/`; integrations are isolated under `src/integrations/`.
 
 ## License
 
