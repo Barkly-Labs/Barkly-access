@@ -10,7 +10,14 @@ test("build emits a standalone BetterDiscord plugin with metadata and bundled fe
   assert.match(output, /module\.exports/);
   assert.match(output, /AggregationEngine\s*=\s*class/);
   assert.match(output, /normalizeMessages/);
-  assert.match(output, /Conversation Stats/);
+  assert.match(output, /Open Analytics Dashboard/);
+  assert.match(output, /ba-analytics-dashboard/);
+  assert.match(output, /data-dashboard-conversations/);
+  assert.match(output, /aria-modal/);
+  assert.match(output, /aria-labelledby/);
+  assert.match(output, /type="date"/);
+  assert.match(output, /data-page-next/);
+  assert.match(output, /Higher contrast/);
   assert.match(output, /rendered-discord-ui/);
   assert.match(output, /HistoricalStore/);
   assert.match(output, /prefers-reduced-motion/);

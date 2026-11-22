@@ -33,13 +33,19 @@ export class CollectionCoordinator {
 
   async run(conversationId, signal) {
     let processed = 0;
+    let duplicates = 0;
+    let encountered = 0;
+    let batches = 0;
+    const startedAt = Date.now();
     try {
-      this.store.markStatus(conversationId, "collecting");
+      this.store.markStatus(conversationId, "collecting", { coverage: { startedAt, interrupted: false, stopReason: null, encountered: 0, duplicatesIgnored: 0, batches: 0 } });
       await this.adapter.startScan({ conversationId, signal });
       while (!signal.aborted) {
         const batch = await this.adapter.getNextBatch({ conversationId, signal });
         if (signal.aborted) break;
         if (!batch || !Array.isArray(batch.records)) throw new Error("Source returned an invalid batch");
+        batches++;
+        encountered += batch.records.length;
         this.store.markStatus(conversationId, "processing");
         const normalized = normalizeMessages(batch.records, {
           getMessageId: m => m.messageId ?? m.id ?? m.message_id,
@@ -51,21 +57,25 @@ export class CollectionCoordinator {
         }).map(record => ({ ...record, conversationId }));
         const result = this.store.applyBatch(conversationId, normalized, { status: "partial", complete: batch.complete === true });
         processed += result.added;
+        duplicates += result.duplicates;
         const state = batch.complete ? "completed" : batch.done ? "partial" : "collecting";
-        this.store.markStatus(conversationId, state, { coverage: { source: batch.source || "authorized-adapter" } });
-        try { this.onProgress({ conversationId, status: state, processed, duplicates: result.duplicates }); } catch { /* UI callbacks do not affect stored data. */ }
-        if (batch.done) return { status: state, processed };
+        const collection = { source: batch.source || "authorized-adapter", startedAt,
+          durationMs: Date.now() - startedAt, encountered, duplicatesIgnored: duplicates, batches,
+          stopReason: batch.stopReason || null, interrupted: false };
+        this.store.markStatus(conversationId, state, { coverage: collection });
+        try { this.onProgress({ conversationId, status: state, processed, duplicates, encountered, batches, progress: batch.progress || null }); } catch { /* UI callbacks do not affect stored data. */ }
+        if (batch.done) return { status: state, processed, duplicates, encountered, batches, stopReason: batch.stopReason || null };
       }
       await this.adapter.cancelScan?.({ conversationId });
       let entry = null;
-      try { entry = this.store.markStatus(conversationId, "cancelled"); } catch { /* Preserve cancellation even if persistence is unavailable. */ }
-      try { this.onProgress({ conversationId, status: "cancelled", processed }); } catch { /* Ignore presentation failures. */ }
-      return { status: "cancelled", processed, conversation: entry };
+      try { entry = this.store.markStatus(conversationId, "cancelled", { coverage: { startedAt, durationMs: Date.now() - startedAt, encountered, duplicatesIgnored: duplicates, batches, interrupted: true, stopReason: "cancelled" } }); } catch { /* Preserve cancellation even if persistence is unavailable. */ }
+      try { this.onProgress({ conversationId, status: "cancelled", processed, duplicates, encountered, batches }); } catch { /* Ignore presentation failures. */ }
+      return { status: "cancelled", processed, duplicates, encountered, batches, conversation: entry };
     } catch (error) {
       const message = error?.message || "Collection failed";
-      try { this.store.markStatus(conversationId, "failed", { error: message }); } catch { /* Report the storage error without retrying it. */ }
+      try { this.store.markStatus(conversationId, "failed", { error: message, coverage: { startedAt, durationMs: Date.now() - startedAt, encountered, duplicatesIgnored: duplicates, batches, interrupted: true, stopReason: "error" } }); } catch { /* Report the storage error without retrying it. */ }
       try { this.onProgress({ conversationId, status: "failed", processed, error: message }); } catch { /* Ignore presentation failures. */ }
-      return { status: "failed", processed, error: message };
+      return { status: "failed", processed, duplicates, encountered, batches, error: message };
     } finally {
       try { await this.adapter.dispose?.({ conversationId }); } catch { /* Disposal errors must not hide collection results. */ }
     }

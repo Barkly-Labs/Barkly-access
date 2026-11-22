@@ -1,5 +1,6 @@
 export const ANALYTICS_SCHEMA_VERSION = 1;
-export const MAX_DEDUPE_KEYS_PER_CONVERSATION = 20_000;
+// Compact local fingerprints preserve idempotency across larger histories.
+export const MAX_DEDUPE_KEYS_PER_CONVERSATION = 250_000;
 
 /** Analytics storage deliberately excludes message bodies and raw message IDs. */
 export function fingerprintMessageId(messageId) {

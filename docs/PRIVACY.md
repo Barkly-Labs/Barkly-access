@@ -2,7 +2,7 @@
 
 ## Data collection
 
-Collection starts only for the conversation selected in Discord. Barkly Access scrolls that conversation's visible interface to request older rendered rows, then inspects those rows. It does not open unrelated conversations, call private endpoints, extract credentials, or store tokens. Processing is local. Analytics are not transmitted. The scan can temporarily move the conversation view and then tries to restore the previous position; a stop control cancels it.
+Collection starts only for the conversation selected in Discord. Barkly Access progressively scrolls that conversation's visible interface to request older rendered rows, then inspects each rendered batch. Collection begins when a conversation is selected and its rendered message list changes; Stats explains the behavior and offers cancellation and manual backfill. It does not open unrelated conversations, call private endpoints, extract credentials, or store tokens. Processing is local. Analytics are not transmitted. The scan can temporarily move the conversation view and then tries to restore the previous position; a stop control cancels it.
 
 ## Data retained locally
 
@@ -12,7 +12,7 @@ The BetterDiscord Data API stores:
 - Author IDs and display names needed to rank and identify people in the dashboard.
 - Aggregate sent, received, unknown, daily, and hourly counts.
 - Exclusion preferences, collection state, and coverage timestamps.
-- Up to 20,000 non-cryptographic fingerprints of message IDs per conversation for deduplication.
+- Up to 250,000 non-cryptographic fingerprints of message IDs per conversation for deduplication.
 
 The fingerprint is a deterministic 64-bit FNV-1a hash, not a cryptographic anonymizer. It is pseudonymous metadata and may be guessable. Fingerprints are bounded and older entries are discarded first. This means a previously seen message older than the window may be counted again if it reappears. Raw message IDs are not kept in persistent analytics.
 

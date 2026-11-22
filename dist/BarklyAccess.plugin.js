@@ -122,7 +122,7 @@ function normalizeMessages(sourceMessages, {
 
 // src/core/privacy/data-policy.js
 var ANALYTICS_SCHEMA_VERSION = 1;
-var MAX_DEDUPE_KEYS_PER_CONVERSATION = 2e4;
+var MAX_DEDUPE_KEYS_PER_CONVERSATION = 25e4;
 function fingerprintMessageId(messageId) {
   let hash = 0xcbf29ce484222325n;
   for (const char of String(messageId)) {
@@ -181,6 +181,7 @@ var HistoricalStore = class {
           received: count(person.received),
           unknown: count(person.unknown),
           total: count(person.total),
+          firstTimestamp: finiteOrNull(person.firstTimestamp),
           lastTimestamp: finiteOrNull(person.lastTimestamp),
           daily: countMap(person.daily),
           dailySent: countMap(person.dailySent),
@@ -213,7 +214,14 @@ var HistoricalStore = class {
           recordsProcessed: count(raw.coverage?.recordsProcessed),
           oldestTimestamp: finiteOrNull(raw.coverage?.oldestTimestamp),
           newestTimestamp: finiteOrNull(raw.coverage?.newestTimestamp),
-          source: safeString(raw.coverage?.source, 80)
+          source: safeString(raw.coverage?.source, 80),
+          startedAt: finiteOrNull(raw.coverage?.startedAt),
+          durationMs: count(raw.coverage?.durationMs),
+          encountered: count(raw.coverage?.encountered),
+          duplicatesIgnored: count(raw.coverage?.duplicatesIgnored),
+          batches: count(raw.coverage?.batches),
+          stopReason: safeString(raw.coverage?.stopReason, 80),
+          interrupted: raw.coverage?.interrupted === true
         },
         updatedAt: count(raw.updatedAt),
         ...raw.error ? { error: safeString(raw.error, 240) } : {}
@@ -335,6 +343,7 @@ var HistoricalStore = class {
       received: 0,
       unknown: 0,
       total: 0,
+      firstTimestamp: null,
       lastTimestamp: null,
       daily: {},
       dailySent: {},
@@ -349,7 +358,10 @@ var HistoricalStore = class {
     const direction = record.isSelf === true ? "sent" : record.isSelf === false ? "received" : "unknown";
     person[direction]++;
     person.total++;
-    if (record.timestamp != null) person.lastTimestamp = Math.max(person.lastTimestamp || 0, record.timestamp);
+    if (record.timestamp != null) {
+      person.firstTimestamp = Math.min(person.firstTimestamp ?? record.timestamp, record.timestamp);
+      person.lastTimestamp = Math.max(person.lastTimestamp || 0, record.timestamp);
+    }
     entry.people[authorId] = person;
     entry.totals[direction]++;
     if (record.timestamp != null) {
@@ -414,13 +426,19 @@ var CollectionCoordinator = class {
   }
   async run(conversationId, signal) {
     let processed = 0;
+    let duplicates = 0;
+    let encountered = 0;
+    let batches = 0;
+    const startedAt = Date.now();
     try {
-      this.store.markStatus(conversationId, "collecting");
+      this.store.markStatus(conversationId, "collecting", { coverage: { startedAt, interrupted: false, stopReason: null, encountered: 0, duplicatesIgnored: 0, batches: 0 } });
       await this.adapter.startScan({ conversationId, signal });
       while (!signal.aborted) {
         const batch = await this.adapter.getNextBatch({ conversationId, signal });
         if (signal.aborted) break;
         if (!batch || !Array.isArray(batch.records)) throw new Error("Source returned an invalid batch");
+        batches++;
+        encountered += batch.records.length;
         this.store.markStatus(conversationId, "processing");
         const normalized = normalizeMessages(batch.records, {
           getMessageId: (m) => m.messageId ?? m.id ?? m.message_id,
@@ -432,36 +450,47 @@ var CollectionCoordinator = class {
         }).map((record) => ({ ...record, conversationId }));
         const result = this.store.applyBatch(conversationId, normalized, { status: "partial", complete: batch.complete === true });
         processed += result.added;
+        duplicates += result.duplicates;
         const state = batch.complete ? "completed" : batch.done ? "partial" : "collecting";
-        this.store.markStatus(conversationId, state, { coverage: { source: batch.source || "authorized-adapter" } });
+        const collection = {
+          source: batch.source || "authorized-adapter",
+          startedAt,
+          durationMs: Date.now() - startedAt,
+          encountered,
+          duplicatesIgnored: duplicates,
+          batches,
+          stopReason: batch.stopReason || null,
+          interrupted: false
+        };
+        this.store.markStatus(conversationId, state, { coverage: collection });
         try {
-          this.onProgress({ conversationId, status: state, processed, duplicates: result.duplicates });
+          this.onProgress({ conversationId, status: state, processed, duplicates, encountered, batches, progress: batch.progress || null });
         } catch {
         }
-        if (batch.done) return { status: state, processed };
+        if (batch.done) return { status: state, processed, duplicates, encountered, batches, stopReason: batch.stopReason || null };
       }
       await this.adapter.cancelScan?.({ conversationId });
       let entry = null;
       try {
-        entry = this.store.markStatus(conversationId, "cancelled");
+        entry = this.store.markStatus(conversationId, "cancelled", { coverage: { startedAt, durationMs: Date.now() - startedAt, encountered, duplicatesIgnored: duplicates, batches, interrupted: true, stopReason: "cancelled" } });
       } catch {
       }
       try {
-        this.onProgress({ conversationId, status: "cancelled", processed });
+        this.onProgress({ conversationId, status: "cancelled", processed, duplicates, encountered, batches });
       } catch {
       }
-      return { status: "cancelled", processed, conversation: entry };
+      return { status: "cancelled", processed, duplicates, encountered, batches, conversation: entry };
     } catch (error) {
       const message = error?.message || "Collection failed";
       try {
-        this.store.markStatus(conversationId, "failed", { error: message });
+        this.store.markStatus(conversationId, "failed", { error: message, coverage: { startedAt, durationMs: Date.now() - startedAt, encountered, duplicatesIgnored: duplicates, batches, interrupted: true, stopReason: "error" } });
       } catch {
       }
       try {
         this.onProgress({ conversationId, status: "failed", processed, error: message });
       } catch {
       }
-      return { status: "failed", processed, error: message };
+      return { status: "failed", processed, duplicates, encountered, batches, error: message };
     } finally {
       try {
         await this.adapter.dispose?.({ conversationId });
@@ -536,7 +565,7 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
     for (const person of Object.values(conversation.people)) {
       if (conversation.excludedAuthors.includes(person.authorId)) continue;
       if (query && !person.name.toLocaleLowerCase().includes(query)) continue;
-      const current = people.get(person.authorId) || { authorId: person.authorId, name: person.name, sent: 0, received: 0, unknown: 0, total: 0, lastTimestamp: null };
+      const current = people.get(person.authorId) || { authorId: person.authorId, name: person.name, sent: 0, received: 0, unknown: 0, total: 0, firstTimestamp: null, lastTimestamp: null };
       if (since == null && until == null) {
         current.sent += person.sent;
         current.received += person.received;
@@ -551,7 +580,7 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
         }
       }
       current.total = current.sent + current.received + current.unknown;
-      current.total += person.total;
+      current.firstTimestamp = person.firstTimestamp == null ? current.firstTimestamp : Math.min(current.firstTimestamp ?? person.firstTimestamp, person.firstTimestamp);
       current.lastTimestamp = Math.max(current.lastTimestamp || 0, person.lastTimestamp || 0) || null;
       people.set(person.authorId, current);
     }
@@ -559,7 +588,7 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
     if (last != null) newestActivity = Math.max(newestActivity || 0, last);
   }
   return {
-    totals: { ...totals, tracked: totals.sent + totals.received },
+    totals: { ...totals, tracked: totals.sent + totals.received + totals.unknown },
     trackedConversations: conversations.length,
     statuses: conversations.reduce((result, item) => {
       result[item.status] = (result[item.status] || 0) + 1;
@@ -576,99 +605,172 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
 
 // src/integrations/betterdiscord/rendered-history-adapter.js
 var RenderedHistoryAdapter = class {
-  constructor({ getSelectedConversation, getCurrentUserId, getDocument = () => document, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxBatches = 250, stablePasses = 3 }) {
+  constructor({
+    getSelectedConversation,
+    getCurrentUserId,
+    getDocument = () => document,
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    maxBatches = 250,
+    stablePasses = 3,
+    renderDelay = 450,
+    scrollStepRatio = 0.72
+  }) {
     this.getSelectedConversation = getSelectedConversation;
     this.getCurrentUserId = getCurrentUserId;
     this.getDocument = getDocument;
     this.wait = wait;
     this.maxBatches = maxBatches;
     this.stablePasses = stablePasses;
+    this.renderDelay = renderDelay;
+    this.scrollStepRatio = scrollStepRatio;
   }
   async startScan({ conversationId }) {
     if (String(this.getSelectedConversation()) !== String(conversationId)) throw new Error("Conversation is no longer selected");
-    const root = this.getDocument().querySelector('[class*="scrollerInner"]');
+    const root = this.findMessageRoot();
     if (!root) throw new Error("The selected conversation has no rendered message list");
     const scroller = this.getScrollContainer(root);
-    const rootRect = scroller.getBoundingClientRect?.();
-    const anchor = [...root.querySelectorAll('[class*="messageListItem"]')].find((row) => !rootRect || row.getBoundingClientRect?.().bottom > rootRect.top);
+    const rect = scroller.getBoundingClientRect?.();
+    const anchor = [...root.querySelectorAll('[class*="messageListItem"]')].find((row) => !rect || row.getBoundingClientRect?.().bottom > rect.top);
     this.scan = {
       conversationId: String(conversationId),
       root,
       scroller,
-      initialTop: scroller.scrollTop || 0,
-      initialHeight: root.scrollHeight || 0,
-      anchorId: anchor?.id || anchor?.getAttribute("data-list-item-id") || "",
-      anchorOffset: anchor && rootRect ? anchor.getBoundingClientRect().top - rootRect.top : null,
+      initialTop: Number(scroller.scrollTop) || 0,
+      initialHeight: Number(scroller.scrollHeight) || Number(root.scrollHeight) || 0,
+      anchorId: this.rowId(anchor),
+      anchorOffset: anchor && rect ? anchor.getBoundingClientRect().top - rect.top : null,
       previousSignature: "",
+      previousTop: Number(scroller.scrollTop) || 0,
       noProgress: 0,
       batches: 0,
-      cancelled: false
+      encountered: 0,
+      uniqueSeen: /* @__PURE__ */ new Set(),
+      startedAt: Date.now(),
+      stopReason: null
     };
   }
   async getNextBatch({ conversationId, signal }) {
-    if (String(this.getSelectedConversation()) !== String(conversationId) || signal?.aborted) return { records: [], done: true, complete: false, source: "rendered-discord-ui" };
     const scan = this.scan;
-    let root = this.getDocument().querySelector('[class*="scrollerInner"]');
-    if (!root) return { records: [], done: true, complete: false, source: "rendered-discord-ui" };
+    if (!scan || String(this.getSelectedConversation()) !== String(conversationId) || signal?.aborted) {
+      return { records: [], done: true, complete: false, stopReason: "interrupted", source: "rendered-discord-ui" };
+    }
+    let root = this.findMessageRoot() || scan.root;
+    let scroller = this.getScrollContainer(root);
+    if (!root.isConnected || !scroller.isConnected) return { records: [], done: true, complete: false, stopReason: "conversation-view-unavailable", source: "rendered-discord-ui" };
     scan.root = root;
-    const beforeSignature = this.messageSignature(root);
-    const beforeHeight = root.scrollHeight || 0;
-    const scroller = this.getScrollContainer(root);
-    scroller.scrollTop = 0;
-    await this.wait(500);
-    if (String(this.getSelectedConversation()) !== String(conversationId) || signal?.aborted) return { records: [], done: true, complete: false, source: "rendered-discord-ui" };
-    root = this.getDocument().querySelector('[class*="scrollerInner"]') || root;
-    const rows = root ? [...root.querySelectorAll('[class*="messageListItem"]')] : [];
-    const selfId = this.getCurrentUserId();
+    scan.scroller = scroller;
+    const rows = [...root.querySelectorAll('[class*="messageListItem"]')];
+    const selfId = this.getCurrentUserId?.() ?? null;
     const records = rows.flatMap((row) => {
-      const messageId = row.id?.match(/chat-messages-(\d+)/)?.[1] || row.getAttribute("data-list-item-id")?.match(/(\d{15,})/)?.[1];
-      const userLink = row.querySelector('a[href*="/users/"]')?.getAttribute("href")?.match(/\/users\/(\d+)/)?.[1];
-      const avatar = row.querySelector('img[src*="/avatars/"]')?.getAttribute("src")?.match(/\/avatars\/(\d+)/)?.[1];
-      const authorId = row.getAttribute("data-user-id") || userLink || avatar;
-      if (!messageId || !authorId) return [];
+      const messageId = this.rowId(row);
+      if (!messageId) return [];
+      const authorId = row.getAttribute("data-user-id") || row.querySelector('a[href*="/users/"]')?.getAttribute("href")?.match(/\/users\/(\d+)/)?.[1] || row.querySelector('img[src*="/avatars/"]')?.getAttribute("src")?.match(/\/avatars\/(\d+)/)?.[1];
+      if (!authorId) return [];
       const authorName = row.querySelector('[class*="username"]')?.textContent?.trim() || "";
-      const timeElement = row.querySelector("time[datetime]");
-      const timestamp = timeElement ? Date.parse(timeElement.getAttribute("datetime")) : NaN;
-      return [{ messageId, authorId, authorName, timestamp: Number.isFinite(timestamp) ? timestamp : null, isSelf: selfId == null ? null : String(authorId) === String(selfId) }];
+      const time = row.querySelector("time[datetime]")?.getAttribute("datetime");
+      const parsed = time ? Date.parse(time) : NaN;
+      return [{
+        messageId,
+        authorId,
+        authorName,
+        timestamp: Number.isFinite(parsed) ? parsed : null,
+        isSelf: selfId == null ? null : String(authorId) === String(selfId)
+      }];
     });
+    scan.encountered += records.length;
+    for (const record of records) scan.uniqueSeen.add(record.messageId);
+    const beforeTop = Number(scroller.scrollTop) || 0;
+    const beforeSignature = this.messageSignature(root);
+    const beforeHeight = Number(scroller.scrollHeight) || Number(root.scrollHeight) || 0;
+    const step = Math.max(160, Math.floor((Number(scroller.clientHeight) || 700) * this.scrollStepRatio));
+    scroller.scrollTop = Math.max(0, beforeTop - step);
+    try {
+      scroller.dispatchEvent(new (this.getDocument().defaultView?.Event || Event)("scroll", { bubbles: true }));
+    } catch {
+    }
+    await this.wait(this.renderDelay);
+    if (String(this.getSelectedConversation()) !== String(conversationId) || signal?.aborted) {
+      return { records, done: true, complete: false, stopReason: "interrupted", source: "rendered-discord-ui" };
+    }
+    root = this.findMessageRoot() || root;
+    scroller = this.getScrollContainer(root);
+    scan.root = root;
+    scan.scroller = scroller;
+    const afterTop = Number(scroller.scrollTop) || 0;
     const afterSignature = this.messageSignature(root);
-    const changed = beforeSignature !== afterSignature || beforeHeight !== (root.scrollHeight || 0);
-    scan.noProgress = changed ? 0 : scan.noProgress + 1;
+    const afterHeight = Number(scroller.scrollHeight) || Number(root.scrollHeight) || 0;
+    const changed = beforeSignature !== afterSignature || beforeHeight !== afterHeight;
+    const moved = Math.abs(afterTop - beforeTop) > 1;
+    scan.noProgress = changed || moved ? 0 : scan.noProgress + 1;
     scan.batches++;
-    const done = scan.noProgress >= this.stablePasses || scan.batches >= this.maxBatches;
-    return { records, done, complete: false, source: "rendered-discord-ui", progress: { batches: scan.batches, stablePasses: scan.noProgress } };
+    const atOldestVisibleEdge = afterTop <= 2;
+    const stagnantAtEdge = atOldestVisibleEdge && scan.noProgress >= this.stablePasses;
+    const stalled = !moved && !changed && scan.noProgress >= this.stablePasses;
+    const exhausted = scan.batches >= this.maxBatches;
+    const done = stagnantAtEdge || stalled || exhausted;
+    const stopReason = exhausted ? "batch-limit" : stagnantAtEdge ? "oldest-visible-edge-stable" : stalled ? "scroll-stagnation" : null;
+    if (done) scan.stopReason = stopReason;
+    return {
+      records,
+      done,
+      complete: false,
+      stopReason,
+      source: "rendered-discord-ui",
+      progress: {
+        batches: scan.batches,
+        encountered: scan.encountered,
+        uniqueInScan: scan.uniqueSeen.size,
+        stablePasses: scan.noProgress,
+        scrollTop: afterTop,
+        atOldestVisibleEdge
+      }
+    };
+  }
+  findMessageRoot() {
+    const doc = this.getDocument();
+    const candidates = [...doc.querySelectorAll('[class*="scrollerInner"]')].filter((node) => node.querySelector('[class*="messageListItem"]'));
+    if (!candidates.length) return null;
+    return candidates.map((node) => ({
+      node,
+      count: node.querySelectorAll('[class*="messageListItem"]').length,
+      visible: !!node.getClientRects?.().length
+    })).sort((a, b) => Number(b.visible) - Number(a.visible) || b.count - a.count)[0].node;
+  }
+  rowId(row) {
+    return row?.id?.match(/chat-messages-(\d+)/)?.[1] || row?.getAttribute("data-list-item-id")?.match(/(\d{15,})/)?.[1] || null;
   }
   messageSignature(root) {
-    return [...root.querySelectorAll('[class*="messageListItem"]')].map((row) => row.id || row.getAttribute("data-list-item-id") || "").join("|");
+    return [...root.querySelectorAll('[class*="messageListItem"]')].map((row) => this.rowId(row) || "").join("|");
   }
   getScrollContainer(root) {
     let current = root;
     while (current?.parentElement) {
       current = current.parentElement;
       const className = typeof current.className === "string" ? current.className : "";
-      if (className.includes("scrollerBase")) return current;
       const style = this.getDocument().defaultView?.getComputedStyle?.(current);
-      if (style && /(auto|scroll|overlay)/.test(`${style.overflowY} ${style.overflow}`) && current.scrollHeight > current.clientHeight + 2) return current;
+      const scrollable = style && /(auto|scroll|overlay)/.test(`${style.overflowY} ${style.overflow}`) && current.scrollHeight > current.clientHeight + 2;
+      if (className.includes("scrollerBase") || scrollable) return current;
       if (current === this.getDocument().body) break;
     }
     return root;
   }
   async cancelScan() {
-    if (this.scan) this.scan.cancelled = true;
+    if (this.scan) this.scan.stopReason = "cancelled";
   }
   async dispose({ conversationId } = {}) {
     const scan = this.scan;
     if (!scan) return;
     const selected = String(this.getSelectedConversation()) === String(conversationId || scan.conversationId);
-    const messageRoot = this.getDocument().querySelector('[class*="scrollerInner"]') || scan.root;
-    const rootRect = scan.scroller.getBoundingClientRect?.();
-    const anchor = scan.anchorId && [...messageRoot.querySelectorAll('[class*="messageListItem"]')].find((row) => row.id === scan.anchorId || row.getAttribute("data-list-item-id") === scan.anchorId);
-    if (selected && anchor && rootRect && scan.anchorOffset != null) {
-      const offsetNow = anchor.getBoundingClientRect().top - rootRect.top;
-      scan.scroller.scrollTop += offsetNow - scan.anchorOffset;
+    const root = this.findMessageRoot() || scan.root;
+    const scroller = this.getScrollContainer(root);
+    const rect = scroller.getBoundingClientRect?.();
+    const anchor = scan.anchorId && [...root.querySelectorAll('[class*="messageListItem"]')].find((row) => this.rowId(row) === scan.anchorId);
+    if (selected && anchor && rect && scan.anchorOffset != null) {
+      scroller.scrollTop += anchor.getBoundingClientRect().top - rect.top - scan.anchorOffset;
     } else if (selected) {
-      const addedHeight = Math.max(0, (messageRoot.scrollHeight || 0) - scan.initialHeight);
-      scan.scroller.scrollTop = scan.initialTop + addedHeight;
+      const currentHeight = Number(scroller.scrollHeight) || Number(root.scrollHeight) || scan.initialHeight;
+      const addedHeight = Math.max(0, currentHeight - scan.initialHeight);
+      scroller.scrollTop = Math.min(scroller.scrollHeight, scan.initialTop + addedHeight);
     }
     this.scan = null;
   }
@@ -772,7 +874,7 @@ var BarklyAccess = class {
     const p = document.createElement("aside");
     p.id = this.panelId;
     p.setAttribute("aria-label", "Barkly Access");
-    p.innerHTML = `<button class="ba-main" aria-expanded="false">Barkly Access <span aria-hidden="true">\uFF0B</span></button><div class="ba-options" hidden><div class="ba-tabs" role="tablist" aria-label="Barkly Access features"><button type="button" role="tab" aria-selected="true" data-tab="controls" class="ba-tab-active">Access</button><button type="button" role="tab" aria-selected="false" data-tab="frequent">Frequent</button><button type="button" role="tab" aria-selected="false" data-tab="stats">Stats</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F \xB7 quiet view<br>Ctrl+Shift+R \xB7 restore</p></section><section data-pane="frequent" hidden><p class="ba-summary">Ranks authors from locally stored aggregates for conversations you select. No message text is saved.</p><details class="ba-import-fallback"><summary>Optional testing or fallback import</summary><label class="ba-file-label" for="ba-frequent-file">Choose JSON file</label><input id="ba-frequent-file" type="file" accept=".json,application/json" aria-label="Import message history JSON file"><button type="button" data-action="clearFrequent" class="ba-secondary">Clear imported ranking</button></details><div class="ba-import-status" role="status" aria-live="polite">Automatic stats update while a conversation is open.</div><ol class="ba-frequent-list" aria-label="Frequent authors by message count" aria-live="polite"></ol></section><section data-pane="stats" hidden><h2 class="ba-stats-title">Conversation Stats</h2><p class="ba-summary">Barkly Access counts metadata from messages currently rendered in your selected conversation. Older history is included only as it loads in Discord.</p><div class="ba-collection-status" role="status" aria-live="polite"></div><div class="ba-stat-cards" aria-label="Message totals"></div><label for="ba-stats-search">Search people</label><input id="ba-stats-search" type="search" autocomplete="off"><label for="ba-stats-range">Activity range</label><select id="ba-stats-range"><option value="all">All tracked time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select><label for="ba-stats-granularity">Activity grouping</label><select id="ba-stats-granularity"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option></select><h3>Messages by person</h3><ol class="ba-stats-people" aria-label="People ranked by messages received"></ol><h3>Activity over time</h3><p class="ba-chart-summary">Message totals grouped in UTC</p><ol class="ba-daily-chart" aria-label="Message activity chart"></ol><div class="ba-person-detail" aria-live="polite"></div><button type="button" data-action="clearConversation" class="ba-secondary">Clear this conversation</button><button type="button" data-action="clearAnalytics" class="ba-secondary">Clear all analytics</button></section></div>`;
+    p.innerHTML = `<button class="ba-main" aria-expanded="false">Barkly Access <span aria-hidden="true">\uFF0B</span></button><div class="ba-options" hidden><div class="ba-tabs" role="tablist" aria-label="Barkly Access features"><button type="button" role="tab" aria-selected="true" data-tab="controls" class="ba-tab-active">Access</button><button type="button" role="tab" aria-selected="false" data-tab="frequent">Frequent</button><button type="button" role="tab" aria-selected="false" data-tab="stats">Stats</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F \xB7 quiet view<br>Ctrl+Shift+R \xB7 restore</p></section><section data-pane="frequent" hidden><p class="ba-summary">Ranks authors from locally stored aggregates for conversations you select. No message text is saved.</p><details class="ba-import-fallback"><summary>Optional testing or fallback import</summary><label class="ba-file-label" for="ba-frequent-file">Choose JSON file</label><input id="ba-frequent-file" type="file" accept=".json,application/json" aria-label="Import message history JSON file"><button type="button" data-action="clearFrequent" class="ba-secondary">Clear imported ranking</button></details><div class="ba-import-status" role="status" aria-live="polite">Automatic stats update while a conversation is open.</div><ol class="ba-frequent-list" aria-label="Frequent authors by message count" aria-live="polite"></ol></section><section data-pane="stats" hidden><h2 class="ba-stats-title">Conversation analytics</h2><p class="ba-summary">Local, metadata-only summaries. Discord exposes only history rendered in the selected conversation, so coverage cannot be confirmed as complete.</p><div class="ba-collection-status" role="status" aria-live="polite"></div><button type="button" data-action="openAnalytics" class="ba-open-analytics">Open Analytics Dashboard</button><button type="button" data-action="collectNow" class="ba-secondary">Backfill selected conversation</button><button type="button" data-action="cancelCollection" class="ba-secondary" hidden>Stop collection</button><button type="button" data-action="clearConversation" class="ba-secondary">Clear this conversation</button><button type="button" data-action="clearAnalytics" class="ba-secondary">Clear all analytics</button></section></div>`;
     p.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-action], button[data-tab], button[data-author], button[data-exclude], button.ba-main");
       if (!b) return;
@@ -804,6 +906,8 @@ var BarklyAccess = class {
       }
       const a = b.dataset.action;
       if (a === "restore") this.restore();
+      else if (a === "openAnalytics") this.openAnalyticsDashboard();
+      else if (a === "collectNow") this.startCollectionNow();
       else if (a === "clearFrequent") this.clearFrequent();
       else if (a === "clearConversation") this.clearCurrentConversation();
       else if (a === "clearAnalytics") this.clearAllAnalytics();
@@ -812,16 +916,6 @@ var BarklyAccess = class {
       else if (a) this.toggle(a);
     });
     p.querySelector("#ba-frequent-file").addEventListener("change", (e) => this.importFrequentFile(e));
-    p.querySelector("#ba-stats-search").addEventListener("input", () => this.renderStats());
-    p.querySelector("#ba-stats-range").addEventListener("change", () => this.renderStats());
-    p.querySelector("#ba-stats-granularity").addEventListener("change", () => this.renderStats());
-    const cancelButton = document.createElement("button");
-    cancelButton.type = "button";
-    cancelButton.dataset.action = "cancelCollection";
-    cancelButton.className = "ba-secondary";
-    cancelButton.textContent = "Stop history collection";
-    cancelButton.hidden = true;
-    p.querySelector(".ba-collection-status").insertAdjacentElement("afterend", cancelButton);
     document.body.appendChild(p);
     this.panel = p;
     this.updatePanel();
@@ -854,6 +948,13 @@ var BarklyAccess = class {
     clearTimeout(this.collectionTimer);
     this.collectionTimer = setTimeout(() => this.collectSelectedConversation(), 350);
   }
+  startCollectionNow() {
+    const id = this.getSelectedConversation();
+    if (!id) return;
+    this.activeConversationId = id;
+    this.lastHistorySignature = "";
+    this.collectSelectedConversation();
+  }
   async collectSelectedConversation() {
     const conversationId = this.getSelectedConversation();
     if (!conversationId || conversationId !== this.activeConversationId) return;
@@ -874,78 +975,254 @@ var BarklyAccess = class {
   renderStats() {
     if (!this.panel) return;
     const snapshot = this.analyticsStore.snapshot();
-    const range = this.panel.querySelector("#ba-stats-range")?.value || "all";
-    const since = range === "all" ? null : Date.now() - Number(range) * 24 * 60 * 60 * 1e3;
-    const search = this.panel.querySelector("#ba-stats-search")?.value || "";
-    const granularity = this.panel.querySelector("#ba-stats-granularity")?.value || "day";
-    const summary = summarizeAnalytics(snapshot, { since, search, granularity });
-    const cards = this.panel.querySelector(".ba-stat-cards");
-    cards.replaceChildren();
-    const items = [["Messages tracked", summary.totals.tracked], ["Sent", summary.totals.sent], ["Received", summary.totals.received], ["Direction unknown", summary.totals.unknown], ["Conversations", summary.trackedConversations], ["Busiest hour (UTC)", summary.busiestHour ? `${String(summary.busiestHour.hour).padStart(2, "0")}:00` : "\u2014"]];
-    items.forEach(([label, value]) => {
-      const card = document.createElement("div");
-      card.className = "ba-stat-card";
-      const strong = document.createElement("strong");
-      strong.textContent = Number(value || 0).toLocaleString();
-      const caption = document.createElement("span");
-      caption.textContent = label;
-      card.append(strong, caption);
-      cards.appendChild(card);
-    });
     const currentId = this.getSelectedConversation();
     const current = snapshot.conversations[currentId];
     this.panel.querySelector('[data-action="cancelCollection"]').hidden = !this.collectionCoordinator.active.has(String(currentId));
     const status = this.panel.querySelector(".ba-collection-status");
-    status.textContent = current ? `Selected conversation ${current.conversationId}: ${current.status}. ${current.coverage.recordsProcessed.toLocaleString()} messages counted. Barkly Access scrolls this conversation's UI to load older rows, then restores your reading position. Coverage remains partial because Discord does not report complete-history availability.${current.error ? ` Latest error: ${current.error}` : ""}` : this.collectionCoordinator.active.has(String(currentId)) ? "Loading rendered message history for the selected conversation." : "Open a person or conversation in Discord to begin local counting.";
-    const peopleList = this.panel.querySelector(".ba-stats-people");
-    peopleList.replaceChildren();
-    summary.people.slice(0, 100).forEach((person) => {
-      const li = document.createElement("li");
-      li.className = "ba-stats-person-row";
-      const view = document.createElement("button");
-      view.type = "button";
-      view.dataset.author = person.authorId;
-      view.textContent = `${person.name}: ${person.received.toLocaleString()} received, ${person.sent.toLocaleString()} sent${person.unknown ? `, ${person.unknown} direction unknown` : ""}`;
-      li.appendChild(view);
-      if (current?.people[person.authorId]) {
-        const exclude = document.createElement("button");
-        exclude.type = "button";
-        exclude.dataset.exclude = person.authorId;
-        exclude.setAttribute("aria-pressed", String(current.excludedAuthors.includes(person.authorId)));
-        exclude.textContent = current.excludedAuthors.includes(person.authorId) ? "Include" : "Exclude";
-        li.appendChild(exclude);
+    const entry = current;
+    status.textContent = entry ? `Conversation ${entry.conversationId}: ${entry.status}. ${entry.coverage.recordsProcessed.toLocaleString()} unique messages stored; ${entry.coverage.encountered.toLocaleString()} encountered this run; ${entry.coverage.duplicatesIgnored.toLocaleString()} duplicates ignored. Collection stops when the visible UI stops changing near its oldest exposed edge. Discord does not confirm whether older history exists.${entry.coverage.stopReason ? ` Stop reason: ${entry.coverage.stopReason}.` : ""}${entry.error ? ` Latest error: ${entry.error}` : ""}` : this.collectionCoordinator.active.has(String(currentId)) ? "Collecting visible message history for the selected conversation." : "Open a conversation in Discord to collect locally visible message metadata.";
+    if (this.dashboard && !this.dashboard.hidden) this.renderAnalyticsDashboard();
+  }
+  openAnalyticsDashboard() {
+    if (this.dashboard) {
+      this.dashboard.hidden = false;
+      this.renderAnalyticsDashboard();
+      this.dashboard.querySelector("[data-dashboard-back]")?.focus();
+      return;
+    }
+    const view = document.createElement("section");
+    view.id = "ba-analytics-dashboard";
+    view.className = "ba-dashboard";
+    view.setAttribute("role", "dialog");
+    view.setAttribute("aria-modal", "true");
+    view.setAttribute("aria-labelledby", "ba-dashboard-title");
+    view.innerHTML = `<header class="ba-dashboard-header"><button type="button" data-dashboard-back>\u2190 Back to Barkly Access</button><div><p class="ba-kicker">BARKLY ACCESS \xB7 LOCAL ANALYTICS</p><h1 id="ba-dashboard-title" tabindex="-1">Conversation analytics</h1><p class="ba-dashboard-intro">A readable view of the message metadata this plugin has collected on this device. Message text is not retained.</p></div><button type="button" data-dashboard-clear>Clear analytics</button></header>
+      <section class="ba-dashboard-filters" aria-label="Analytics filters"><label>Conversation<select data-filter="conversation"><option value="all">All conversations</option></select></label><label>Person<select data-filter="person"><option value="all">All people</option></select></label><label>From<input type="date" data-filter="from"></label><label>Through<input type="date" data-filter="to"></label><label>Group activity<select data-filter="group"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option></select></label><label>Search people<input type="search" data-filter="search" placeholder="Name or user ID"></label><label>Sort people<select data-filter="sort"><option value="messages">Most messages</option><option value="name">Name</option><option value="recent">Most recent</option></select></label><label>Text size<select data-filter="text"><option value="normal">Normal</option><option value="large">Large</option><option value="xlarge">Extra large</option></select></label><label class="ba-check-filter"><input type="checkbox" data-filter="contrast"> Higher contrast</label></section>
+      <main class="ba-dashboard-content"><section aria-labelledby="ba-overview-title"><h2 id="ba-overview-title">Overview</h2><p class="ba-coverage-note" data-dashboard-coverage role="status"></p><div class="ba-dashboard-metrics" data-dashboard-metrics></div></section>
+      <div class="ba-dashboard-columns"><section><h2>Activity over time</h2><p class="ba-plain-note">Tables keep exact values available to screen readers and keyboard users.</p><div class="ba-table-wrap"><table><caption>Message activity grouped by selected interval (UTC)</caption><thead><tr><th scope="col">Period</th><th scope="col">Messages</th></tr></thead><tbody data-dashboard-activity></tbody></table></div></section><section><h2>Activity by hour</h2><p class="ba-plain-note" data-hour-note></p><div class="ba-table-wrap"><table><caption>Collected messages by hour of day (UTC)</caption><thead><tr><th scope="col">Hour</th><th scope="col">Messages</th></tr></thead><tbody data-dashboard-hours></tbody></table></div></section></div>
+      <section><h2>Activity by day of week</h2><p class="ba-plain-note">Derived from stored UTC daily totals.</p><div class="ba-table-wrap"><table><caption>Messages recorded on each weekday (UTC)</caption><thead><tr><th scope="col">Weekday</th><th scope="col">Messages</th></tr></thead><tbody data-dashboard-weekdays></tbody></table></div></section>
+      <section><h2>People</h2><p class="ba-plain-note">Select a person row to see their stored totals and activity range.</p><div class="ba-table-wrap"><table><caption>People in the selected conversation scope</caption><thead><tr><th scope="col">Person</th><th scope="col">Total</th><th scope="col">Sent</th><th scope="col">Received</th><th scope="col">Unknown</th><th scope="col">First recorded</th><th scope="col">Most recent</th></tr></thead><tbody data-dashboard-people></tbody></table></div><div class="ba-pagination" aria-label="People table pages"><button type="button" data-page-prev>Previous people</button><span data-page-status aria-live="polite"></span><button type="button" data-page-next>Next people</button><label>Rows per page<select data-filter="page-size"><option>25</option><option>50</option><option>100</option></select></label></div><section class="ba-person-detail" data-dashboard-person aria-live="polite"></section></section>
+      <section><h2>Conversations and collection coverage</h2><div class="ba-table-wrap"><table><caption>Stored conversation totals and collection status</caption><thead><tr><th scope="col">Conversation ID</th><th scope="col">Messages</th><th scope="col">People</th><th scope="col">Status</th><th scope="col">Encountered</th><th scope="col">Duplicates</th><th scope="col">Oldest recorded</th><th scope="col">Newest recorded</th><th scope="col">Last stopping reason</th></tr></thead><tbody data-dashboard-conversations></tbody></table></div></section></main></section>`;
+    document.body.appendChild(view);
+    this.dashboard = view;
+    this.dashboardReturnFocus = this.panel?.querySelector('[data-action="openAnalytics"]');
+    view.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-dashboard-back],[data-dashboard-clear],[data-person-id],[data-page-prev],[data-page-next]");
+      if (!button) return;
+      if (button.hasAttribute("data-dashboard-back")) this.closeAnalyticsDashboard();
+      else if (button.hasAttribute("data-dashboard-clear")) this.clearAllAnalytics();
+      else if (button.hasAttribute("data-page-prev")) {
+        this.dashboardPage = Math.max(0, (this.dashboardPage || 0) - 1);
+        this.renderAnalyticsDashboard();
+      } else if (button.hasAttribute("data-page-next")) {
+        this.dashboardPage = (this.dashboardPage || 0) + 1;
+        this.renderAnalyticsDashboard();
+      } else this.renderPersonDetail(button.dataset.personId);
+    });
+    view.addEventListener("input", (event) => {
+      if (event.target.matches("[data-filter]")) {
+        this.dashboardPage = 0;
+        this.renderAnalyticsDashboard();
       }
-      peopleList.appendChild(li);
     });
-    if (!summary.people.length) {
-      const li = document.createElement("li");
-      li.textContent = "No matching tracked people yet.";
-      peopleList.appendChild(li);
-    }
-    const daily = this.panel.querySelector(".ba-daily-chart");
-    daily.replaceChildren();
-    const points = summary.activity.slice(-14);
-    const peak = Math.max(1, ...points.map((point) => point.count));
-    points.forEach(({ period, count: count2 }) => {
-      const li = document.createElement("li");
-      li.className = "ba-daily-row";
-      li.setAttribute("aria-label", `${period}: ${count2} messages`);
-      const label = document.createElement("span");
-      label.textContent = period;
-      const bar = document.createElement("span");
-      bar.className = "ba-daily-bar";
-      bar.style.width = `${Math.max(2, count2 / peak * 100)}%`;
-      bar.setAttribute("aria-hidden", "true");
-      const amount = document.createElement("strong");
-      amount.textContent = count2.toLocaleString();
-      li.append(label, bar, amount);
-      daily.appendChild(li);
+    view.addEventListener("change", (event) => {
+      if (event.target.matches("[data-filter]")) {
+        this.dashboardPage = 0;
+        view.classList.toggle("ba-text-large", view.querySelector('[data-filter="text"]').value === "large");
+        view.classList.toggle("ba-text-xlarge", view.querySelector('[data-filter="text"]').value === "xlarge");
+        view.classList.toggle("ba-high-contrast", view.querySelector('[data-filter="contrast"]').checked);
+        this.renderAnalyticsDashboard();
+      }
     });
-    if (!points.length) {
-      const li = document.createElement("li");
-      li.textContent = "No timestamped activity in this range.";
-      daily.appendChild(li);
+    this.dashboardEscape = (event) => {
+      if (event.key === "Escape" && this.dashboard && !this.dashboard.hidden) {
+        event.preventDefault();
+        this.closeAnalyticsDashboard();
+      }
+    };
+    document.addEventListener("keydown", this.dashboardEscape, true);
+    this.renderAnalyticsDashboard();
+    view.querySelector("[data-dashboard-back]").focus();
+  }
+  closeAnalyticsDashboard() {
+    if (!this.dashboard) return;
+    this.dashboard.hidden = true;
+    this.dashboardReturnFocus?.focus();
+  }
+  renderAnalyticsDashboard() {
+    const view = this.dashboard;
+    if (!view || view.hidden) return;
+    const all = this.analyticsStore.snapshot();
+    const entries = Object.values(all.conversations).sort((a, b) => a.conversationId.localeCompare(b.conversationId));
+    const conversationSelect = view.querySelector('[data-filter="conversation"]');
+    const oldConversation = conversationSelect.value || "all";
+    conversationSelect.replaceChildren(new Option("All conversations", "all"));
+    for (const item of entries) conversationSelect.add(new Option(`Conversation ${item.conversationId}`, item.conversationId));
+    conversationSelect.value = [...conversationSelect.options].some((option) => option.value === oldConversation) ? oldConversation : "all";
+    const allPeople = /* @__PURE__ */ new Map();
+    for (const item of entries) for (const person of Object.values(item.people)) {
+      const current = allPeople.get(person.authorId) || person;
+      allPeople.set(person.authorId, current);
     }
+    const personSelect = view.querySelector('[data-filter="person"]');
+    const oldPerson = personSelect.value || "all";
+    personSelect.replaceChildren(new Option("All people", "all"));
+    [...allPeople.values()].sort((a, b) => a.name.localeCompare(b.name)).forEach((person) => personSelect.add(new Option(person.name, person.authorId)));
+    personSelect.value = [...personSelect.options].some((option) => option.value === oldPerson) ? oldPerson : "all";
+    const selectedId = conversationSelect.value;
+    const scope = selectedId === "all" ? entries : entries.filter((item) => item.conversationId === selectedId);
+    const from = view.querySelector('[data-filter="from"]').value;
+    const to = view.querySelector('[data-filter="to"]').value;
+    const since = from ? Date.parse(`${from}T00:00:00.000Z`) : null;
+    const until = to ? Date.parse(`${to}T23:59:59.999Z`) : null;
+    const personFilter = personSelect.value;
+    const analysisScope = personFilter === "all" ? scope : scope.map((item) => {
+      const person = item.people[personFilter];
+      if (!person) return { ...item, totals: { sent: 0, received: 0, unknown: 0 }, people: {}, daily: {}, dailySent: {}, dailyReceived: {}, dailyUnknown: {}, hourly: Array(24).fill(0) };
+      return { ...item, totals: { sent: person.sent, received: person.received, unknown: person.unknown }, people: { [person.authorId]: person }, excludedAuthors: [], daily: person.daily, dailySent: person.dailySent, dailyReceived: person.dailyReceived, dailyUnknown: person.dailyUnknown, hourly: person.hourly };
+    });
+    const summary = summarizeAnalytics({ version: all.version, conversations: Object.fromEntries(analysisScope.map((item) => [item.conversationId, item])) }, { since, until, search: view.querySelector('[data-filter="search"]').value, granularity: view.querySelector('[data-filter="group"]').value });
+    const people = summary.people;
+    const sort = view.querySelector('[data-filter="sort"]').value;
+    people.sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : sort === "recent" ? (b.lastTimestamp || 0) - (a.lastTimestamp || 0) : b.total - a.total || a.name.localeCompare(b.name));
+    const totals = summary.totals;
+    let dates = summary.daily.map((point) => Date.parse(`${point.date}T00:00:00.000Z`)).filter(Number.isFinite);
+    if (!dates.length && !from && !to && personFilter === "all") dates = analysisScope.flatMap((item) => [item.coverage.oldestTimestamp, item.coverage.newestTimestamp]).filter(Number.isFinite);
+    const firstDate = dates.length ? new Date(Math.min(...dates)).toLocaleString() : from || to ? "No timestamped messages in this range" : "No timestamp stored";
+    const lastDate = dates.length ? new Date(Math.max(...dates) + 86399999).toLocaleString() : from || to ? "No timestamped messages in this range" : "No timestamp stored";
+    const metrics = [["Messages tracked", totals.tracked.toLocaleString()], ["Sent", totals.sent.toLocaleString()], ["Received", totals.received.toLocaleString()], ["Direction unknown", totals.unknown.toLocaleString()], ["Conversations", String(scope.length)], ["Unique people", String(people.length)], ["First recorded", firstDate], ["Most recent", lastDate]];
+    const metricRoot = view.querySelector("[data-dashboard-metrics]");
+    metricRoot.replaceChildren();
+    metrics.forEach(([label, value]) => {
+      const card = document.createElement("article");
+      card.className = "ba-metric";
+      const caption = document.createElement("h3");
+      caption.textContent = label;
+      const amount = document.createElement("p");
+      amount.textContent = value;
+      card.append(caption, amount);
+      metricRoot.append(card);
+    });
+    const coverage = view.querySelector("[data-dashboard-coverage]");
+    const active = scope.filter((item) => this.collectionCoordinator.active.has(item.conversationId)).length;
+    const complete = scope.filter((item) => item.coverage.complete).length;
+    coverage.textContent = `Coverage is based on the visible UI only. ${scope.length} tracked conversation(s); ${active} collecting now; ${complete} marked complete by the source. Discord does not expose a definitive total-history count, so \u201Ccomplete\u201D is unavailable for this UI adapter. ${scope.reduce((n, item) => n + (item.coverage.recordsProcessed || 0), 0).toLocaleString()} unique message records have been processed. ${scope.reduce((n, item) => n + (item.coverage.encountered || 0), 0).toLocaleString()} records encountered in the latest saved runs; ${scope.reduce((n, item) => n + (item.coverage.duplicatesIgnored || 0), 0).toLocaleString()} duplicates ignored in those runs.`;
+    this.fillTable(view.querySelector("[data-dashboard-activity]"), summary.activity.map((point) => [point.period, point.count]));
+    const hours = view.querySelector("[data-dashboard-hours]");
+    hours.replaceChildren();
+    if (from || to) {
+      view.querySelector("[data-hour-note]").textContent = "Hourly totals are retained overall, but are not stored per date. Clear the date filter to view all-date hourly totals.";
+      this.fillTable(hours, [], "Not available for a date-filtered view.");
+    } else {
+      view.querySelector("[data-hour-note]").textContent = "Overall hourly distribution, in UTC.";
+      const hourTotals = Array(24).fill(0);
+      analysisScope.forEach((item) => item.hourly.forEach((count2, hour) => hourTotals[hour] += count2));
+      this.fillTable(hours, hourTotals.map((count2, hour) => [`${String(hour).padStart(2, "0")}:00`, count2]));
+    }
+    const weekdayTotals = Array(7).fill(0);
+    summary.daily.forEach(({ date, count: count2 }) => {
+      const day = Date.parse(`${date}T00:00:00.000Z`);
+      if (Number.isFinite(day)) weekdayTotals[new Date(day).getUTCDay()] += count2;
+    });
+    this.fillTable(view.querySelector("[data-dashboard-weekdays]"), weekdayTotals.map((count2, day) => [new Date(Date.UTC(2023, 0, 1 + day)).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }), count2]));
+    const peopleBody = view.querySelector("[data-dashboard-people]");
+    peopleBody.replaceChildren();
+    const pageSize = Number(view.querySelector('[data-filter="page-size"]').value) || 25;
+    const pageCount = Math.max(1, Math.ceil(people.length / pageSize));
+    this.dashboardPage = Math.min(this.dashboardPage || 0, pageCount - 1);
+    const pagePeople = people.slice(this.dashboardPage * pageSize, (this.dashboardPage + 1) * pageSize);
+    pagePeople.forEach((person) => {
+      const row = document.createElement("tr");
+      const nameCell = document.createElement("th");
+      nameCell.scope = "row";
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.dataset.personId = person.authorId;
+      pick.textContent = person.name || person.authorId;
+      nameCell.append(pick);
+      row.append(nameCell, ...[person.total, person.sent, person.received, person.unknown].map((value) => {
+        const td = document.createElement("td");
+        td.textContent = Number(value || 0).toLocaleString();
+        return td;
+      }), ...[[person.firstTimestamp, "No timestamp"], [person.lastTimestamp, "No timestamp"]].map(([value, fallback]) => {
+        const td = document.createElement("td");
+        td.textContent = value ? new Date(value).toLocaleString() : fallback;
+        return td;
+      }));
+      peopleBody.append(row);
+    });
+    if (!people.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 7;
+      cell.textContent = "No people match these filters.";
+      row.append(cell);
+      peopleBody.append(row);
+    }
+    const pageStatus = view.querySelector("[data-page-status]");
+    pageStatus.textContent = people.length ? `Showing ${this.dashboardPage * pageSize + 1}\u2013${Math.min((this.dashboardPage + 1) * pageSize, people.length)} of ${people.length}` : "No matching people";
+    view.querySelector("[data-page-prev]").disabled = this.dashboardPage === 0;
+    view.querySelector("[data-page-next]").disabled = this.dashboardPage >= pageCount - 1;
+    const conversationsBody = view.querySelector("[data-dashboard-conversations]");
+    conversationsBody.replaceChildren();
+    scope.forEach((item) => {
+      const cells = [item.conversationId, (item.totals.sent + item.totals.received + item.totals.unknown).toLocaleString(), String(Object.keys(item.people).length), item.status, (item.coverage.encountered || 0).toLocaleString(), (item.coverage.duplicatesIgnored || 0).toLocaleString(), item.coverage.oldestTimestamp ? new Date(item.coverage.oldestTimestamp).toLocaleString() : "No timestamp", item.coverage.newestTimestamp ? new Date(item.coverage.newestTimestamp).toLocaleString() : "No timestamp", item.coverage.stopReason || "Not reported"];
+      const row = document.createElement("tr");
+      cells.forEach((value, index) => {
+        const cell = document.createElement(index === 0 ? "th" : "td");
+        if (index === 0) cell.scope = "row";
+        cell.textContent = value;
+        row.append(cell);
+      });
+      conversationsBody.append(row);
+    });
+    if (!scope.length) this.fillTable(conversationsBody, [], "No conversations have been collected yet. Open a conversation in Discord to begin.");
+  }
+  fillTable(body, rows, emptyText = "No timestamped records match these filters.") {
+    body.replaceChildren();
+    if (!rows.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 2;
+      cell.textContent = emptyText;
+      row.append(cell);
+      body.append(row);
+      return;
+    }
+    rows.forEach(([label, count2]) => {
+      const row = document.createElement("tr");
+      const th = document.createElement("th");
+      th.scope = "row";
+      th.textContent = String(label);
+      const td = document.createElement("td");
+      td.textContent = Number(count2 || 0).toLocaleString();
+      row.append(th, td);
+      body.append(row);
+    });
+  }
+  renderPersonDetail(authorId) {
+    const root = this.dashboard?.querySelector("[data-dashboard-person]");
+    if (!root) return;
+    root.replaceChildren();
+    const snapshot = this.analyticsStore.snapshot();
+    const records = Object.values(snapshot.conversations).flatMap((item) => item.people[authorId] ? [item.people[authorId]] : []);
+    if (!records.length) {
+      root.textContent = "No stored data is available for this person.";
+      return;
+    }
+    const name = document.createElement("h3");
+    name.textContent = `Details for ${records[0].name}`;
+    const summary = document.createElement("p");
+    const totals = records.reduce((out, item) => ({ sent: out.sent + item.sent, received: out.received + item.received, unknown: out.unknown + (item.unknown || 0), first: Math.min(out.first, item.firstTimestamp ?? Infinity), last: Math.max(out.last, item.lastTimestamp ?? 0) }), { sent: 0, received: 0, unknown: 0, first: Infinity, last: 0 });
+    summary.textContent = `${totals.sent + totals.received + totals.unknown} total messages: ${totals.sent} sent, ${totals.received} received, ${totals.unknown} unknown direction. First recorded: ${Number.isFinite(totals.first) ? new Date(totals.first).toLocaleString() : "unavailable"}. Most recent: ${totals.last ? new Date(totals.last).toLocaleString() : "unavailable"}.`;
+    const hours = Array(24).fill(0), days = /* @__PURE__ */ new Map();
+    records.forEach((item) => {
+      item.hourly.forEach((count2, hour) => hours[hour] += count2);
+      Object.entries(item.daily).forEach(([day, count2]) => days.set(day, (days.get(day) || 0) + count2));
+    });
+    const detail = document.createElement("p");
+    detail.textContent = `Most active hour (UTC): ${hours.indexOf(Math.max(...hours))}:00 (${Math.max(...hours)} messages). Most active recorded day: ${[...days].sort((a, b) => b[1] - a[1])[0]?.join(" \u2014 ") || "unavailable"}.`;
+    root.append(name, summary, detail);
   }
   showPersonDetail(authorId) {
     const conversation = this.analyticsStore.getConversation(this.getSelectedConversation());
@@ -1096,6 +1373,7 @@ var BarklyAccess = class {
   }
   stop() {
     document.removeEventListener("keydown", this.onKeyDown, true);
+    document.removeEventListener("keydown", this.dashboardEscape, true);
     clearTimeout(this.collectionTimer);
     this.chunkObserver?.disconnect();
     this.historyObserver?.disconnect();
@@ -1104,6 +1382,7 @@ var BarklyAccess = class {
     document.querySelectorAll("[class*=messageListItem]").forEach((n) => this.chunkClasses.forEach((c) => n.classList.remove(c)));
     Object.values(this.classes).forEach((c) => document.body.classList.remove(c));
     BdApi.DOM.removeStyle(this.styleId);
+    this.dashboard?.remove();
     document.getElementById(this.panelId)?.remove();
     this.frequentEngine?.reset();
     this.frequentLabels?.clear();
@@ -1196,6 +1475,50 @@ var BarklyAccess = class {
     #${this.panelId} .ba-frequent-count{color:#aaa;font-size:11px;white-space:nowrap;}
     #${this.panelId} button.ba-on{border-color:#ff8bc5;box-shadow:inset 3px 0 #ff4fa3;}
     #${this.panelId} .ba-restore{background:#ff8bc5;color:#090909;font-weight:700;}
+    #${this.panelId} .ba-open-analytics{background:#ff4fa3;color:#090909;font-weight:800;text-align:center;}
+    #${this.panelId} .ba-collection-status{color:#f4dce8;font-size:12px;line-height:1.5;padding:9px;background:#171217;border-radius:8px;}
+    #ba-analytics-dashboard{position:fixed;inset:0;z-index:1000000;overflow:auto;background:#0e0b0e;color:#f5eef2;font:16px/1.55 system-ui,sans-serif;padding:clamp(16px,3vw,44px);--ba-accent:#ff69ad;--ba-panel:#171217;}
+    #ba-analytics-dashboard[hidden]{display:none;}
+    #ba-analytics-dashboard *{box-sizing:border-box;}
+    #ba-analytics-dashboard button,#ba-analytics-dashboard input,#ba-analytics-dashboard select{font:inherit;color:inherit;}
+    #ba-analytics-dashboard button,#ba-analytics-dashboard select,#ba-analytics-dashboard input{background:#211a20;border:1px solid #806879;border-radius:8px;padding:9px 12px;}
+    #ba-analytics-dashboard button{cursor:pointer;}
+    #ba-analytics-dashboard button:hover{border-color:var(--ba-accent);}
+    #ba-analytics-dashboard :focus-visible{outline:3px solid #ff9bc9;outline-offset:3px;}
+    .ba-dashboard-header{display:grid;grid-template-columns:minmax(180px,1fr) minmax(280px,3fr) minmax(140px,1fr);gap:24px;align-items:start;max-width:1500px;margin:0 auto 26px;padding-bottom:24px;border-bottom:1px solid #493a45;}
+    .ba-dashboard-header>button:last-child{justify-self:end;}
+    .ba-dashboard-header h1{font-size:clamp(28px,4vw,44px);line-height:1.1;margin:3px 0 8px;}
+    .ba-kicker{color:#ff9bc9;font-size:12px;font-weight:800;letter-spacing:.12em;margin:0;}
+    .ba-dashboard-intro,.ba-plain-note{color:#d3c7cf;margin:0;}
+    .ba-dashboard-filters{max-width:1500px;margin:0 auto 28px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;padding:18px;background:#171217;border:1px solid #40323c;border-radius:14px;}
+    .ba-dashboard-filters label{display:grid;gap:5px;font-size:13px;font-weight:650;}
+    .ba-dashboard-filters .ba-check-filter{display:flex;align-items:center;gap:8px;}
+    .ba-check-filter input{width:18px;height:18px;}
+    .ba-dashboard-content{max-width:1500px;margin:auto;display:grid;gap:28px;}
+    .ba-dashboard-content h2{font-size:22px;margin:0 0 12px;}
+    .ba-coverage-note{background:#241a22;border-left:4px solid #ff69ad;border-radius:8px;padding:14px 16px;margin:0 0 14px;color:#f8edf3;}
+    .ba-dashboard-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;}
+    .ba-metric{background:#171217;border:1px solid #40323c;border-radius:12px;padding:15px;min-width:0;}
+    .ba-metric h3{margin:0 0 8px;color:#d8c9d2;font-size:13px;font-weight:650;}
+    .ba-metric p{font-size:clamp(19px,2vw,28px);font-weight:750;margin:0;overflow-wrap:anywhere;}
+    .ba-dashboard-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;}
+    .ba-dashboard-content>section,.ba-dashboard-columns>section{min-width:0;}
+    .ba-table-wrap{max-width:100%;overflow:auto;border:1px solid #453743;border-radius:10px;background:#151115;}
+    #ba-analytics-dashboard table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;}
+    #ba-analytics-dashboard caption{text-align:left;padding:12px 14px;color:#d3c7cf;font-weight:650;}
+    #ba-analytics-dashboard th,#ba-analytics-dashboard td{text-align:left;padding:10px 12px;border-top:1px solid #453743;white-space:nowrap;}
+    #ba-analytics-dashboard thead th{background:#211a20;color:#ffd6e8;}
+    #ba-analytics-dashboard tbody th{font-weight:600;}
+    #ba-analytics-dashboard tbody tr:hover{background:#201820;}
+    #ba-analytics-dashboard tbody button{border:0;background:transparent;color:#ff9bc9;text-decoration:underline;padding:2px 0;}
+    .ba-person-detail{margin-top:14px;padding:16px;background:#171217;border-radius:10px;}
+    .ba-person-detail:empty{display:none;}
+    #ba-analytics-dashboard.ba-text-large{font-size:18px;}
+    #ba-analytics-dashboard.ba-text-xlarge{font-size:20px;}
+    #ba-analytics-dashboard.ba-high-contrast{background:#000;color:#fff;--ba-panel:#000;--ba-accent:#ffb8db;}
+    #ba-analytics-dashboard.ba-high-contrast .ba-metric,#ba-analytics-dashboard.ba-high-contrast .ba-dashboard-filters,#ba-analytics-dashboard.ba-high-contrast .ba-table-wrap{background:#000;border-color:#fff;}
+    @media(max-width:760px){.ba-dashboard-header{grid-template-columns:1fr;gap:12px}.ba-dashboard-header>button:last-child{justify-self:start}.ba-dashboard-columns{grid-template-columns:1fr}#ba-analytics-dashboard{padding:14px}.ba-dashboard-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(prefers-reduced-motion:reduce){#ba-analytics-dashboard *,#${this.panelId} *{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
   `;
   }
 };

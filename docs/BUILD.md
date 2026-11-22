@@ -1,13 +1,10 @@
-# Build and test
+# Build and verify
 
-Requires Node.js 20 or newer and npm.
+Requires Node.js and the platform-specific optional binary for the locked `esbuild` version.
 
 ```sh
-npm install
+npm ci
 npm test
-npm run build
 ```
 
-`npm test` runs the esbuild pipeline first and then Node's built-in tests. The generated, standalone BetterDiscord plugin is `dist/BarklyAccess.plugin.js`. It includes plugin metadata, a CommonJS class export, the collection and analytics modules, and panel styles; it has no external runtime dependencies.
-
-To install it, use BetterDiscord's **Plugins → Open Plugins Folder** action, copy the generated `.plugin.js` file into that folder, return to Plugins, and enable BarklyAccess.
+The test command builds `dist/BarklyAccess.plugin.js` and runs the Node test suite. Copy that built plugin file into BetterDiscord's plugin folder and reload plugins.

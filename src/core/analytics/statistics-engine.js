@@ -31,7 +31,7 @@ export function summarizeAnalytics(snapshot, { since = null, until = null, searc
     for (const person of Object.values(conversation.people)) {
       if (conversation.excludedAuthors.includes(person.authorId)) continue;
       if (query && !person.name.toLocaleLowerCase().includes(query)) continue;
-      const current = people.get(person.authorId) || { authorId: person.authorId, name: person.name, sent: 0, received: 0, unknown: 0, total: 0, lastTimestamp: null };
+      const current = people.get(person.authorId) || { authorId: person.authorId, name: person.name, sent: 0, received: 0, unknown: 0, total: 0, firstTimestamp: null, lastTimestamp: null };
       if (since == null && until == null) {
         current.sent += person.sent;
         current.received += person.received;
@@ -46,7 +46,7 @@ export function summarizeAnalytics(snapshot, { since = null, until = null, searc
         }
       }
       current.total = current.sent + current.received + current.unknown;
-      current.total += person.total;
+      current.firstTimestamp = person.firstTimestamp == null ? current.firstTimestamp : Math.min(current.firstTimestamp ?? person.firstTimestamp, person.firstTimestamp);
       current.lastTimestamp = Math.max(current.lastTimestamp || 0, person.lastTimestamp || 0) || null;
       people.set(person.authorId, current);
     }
@@ -54,7 +54,7 @@ export function summarizeAnalytics(snapshot, { since = null, until = null, searc
     if (last != null) newestActivity = Math.max(newestActivity || 0, last);
   }
   return {
-    totals: { ...totals, tracked: totals.sent + totals.received },
+    totals: { ...totals, tracked: totals.sent + totals.received + totals.unknown },
     trackedConversations: conversations.length,
     statuses: conversations.reduce((result, item) => { result[item.status] = (result[item.status] || 0) + 1; return result; }, {}),
     people: [...people.values()].sort((a, b) => b.received - a.received || a.name.localeCompare(b.name)),

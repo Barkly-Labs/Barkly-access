@@ -1,36 +1,32 @@
 # Conversation analytics and collection
 
-## Automatic workflow
+## Collection behavior
 
-When a person or channel conversation is open in Discord, Barkly Access reads the conversation ID from the visible route and observes that conversation's rendered message list. It temporarily scrolls the selected conversation's ordinary UI to the top to request older message rows, processes each newly rendered batch, then tries to restore the original reading position. A stop button cancels the scan. The adapter stops after 3 unchanged passes or 250 batches. It extracts only message ID, author ID, display name, and timestamp; it never asks for or stores body text or attachments. The coordinator normalizes records, deduplicates, and saves aggregate data.
+When a conversation is open, Barkly Access reads its conversation ID from the visible Discord route and watches the rendered message list. It collects visible message metadata and progressively scrolls the selected conversation upward in overlapping steps. It waits for the UI to render after each step, collects the next visible batch, and repeats until the list stops moving or changing near its oldest visible edge, scrolling stagnates for several passes, or the safety limit of 250 batches is reached. This is an observable UI stopping condition, not proof that all server history has loaded.
 
-No manual JSON export or import is required. A JSON import is tucked under **Frequent → Optional testing or fallback import** and is not used by automatic Stats collection.
+The adapter extracts only message ID (used transiently for deduplication), author ID, display name, and timestamp. It does not read message bodies, attachments, private Discord stores, or private endpoints. It tries to restore the original reading position using a visible message anchor; if the anchor was virtualized away, it estimates the position from the scroller's height change. The scan can be cancelled from **Stats → Stop collection**. A manual **Backfill selected conversation** action is also available.
 
-## Coverage and limitations
+Collection starts when a conversation becomes selected and its rendered message list changes. The Stats pane explains the behavior and shows the current status. The visible conversation can be scrolled while collection runs; a route change or the Stop action interrupts it. Previously processed batches are persisted as they arrive.
 
-The adapter requests older rows through the visible conversation scroller, but it still only sees rows Discord renders. It does not call a message-history endpoint or claim to represent all history. Discord may stop rendering before the beginning of a conversation, and UI selectors can change. Existing aggregates stay saved when the plugin restarts and are updated when newly rendered message IDs are not in the recent deduplication set.
+## Persistence and duplicate handling
 
-The adapter's pagination state is “rendered rows observed,” not a server cursor. The dashboard labels coverage partial and shows the number of records accepted. After 20,000 message fingerprints per conversation, the oldest fingerprint is evicted to bound storage; an older row revisited later may be counted again.
+BetterDiscord's local data store persists aggregate counts, daily and hourly totals, per-person totals, conversation status, coverage information, and compact fingerprints of message IDs. Message IDs and message contents are not retained as raw records. Repeated and overlapping visible batches are deduplicated, including across plugin restarts, for up to 250,000 fingerprints per conversation. After that bound, the oldest fingerprint is evicted; revisiting a very old message after eviction may count it again. Stored aggregates remain cumulative and are user-clearable.
 
-## Statistics
+The plugin keeps data local. It does not send conversation records or analytics to a server. Use **Clear this conversation** or **Clear all analytics** in Stats to erase stored data.
 
-- Total tracked, sent, received, and unknown-direction messages.
-- Counts by author and conversation, sorted by received messages.
-- UTC daily activity, with weekly and monthly grouping.
-- UTC hourly activity and busiest hour.
-- Search and 7/30/90-day time filters.
-- Per-person conversation totals, last recorded activity, and coverage details.
-- Contact exclusion from rankings and clear-this-conversation / clear-all controls.
+## Full-screen dashboard
 
-Date-range summaries exclude records without valid timestamps. A message is sent only when a source can safely identify the current user. The current integration intentionally avoids Discord internal user stores, so it reports direction as unknown.
+Open the Barkly Access panel, choose **Stats**, then select **Open Analytics Dashboard**. The dashboard is a full-screen in-app view with a return control, responsive layout, keyboard focus indicators, high-contrast and text-size settings, and reduced-motion support.
 
-## Adapter contract
+It displays actual stored aggregates: messages tracked, sent/received/unknown direction, conversations, people, first and most recent recorded dates, daily/weekly/monthly activity, activity by hour and weekday, people and conversation tables, and collection status/coverage. Filters include conversation, person, dates, grouping, search, sort, and page size. Person rows open stored per-person totals and activity details. The tables provide text equivalents for every chart-like summary.
 
-The core coordinator accepts an adapter with:
+The dashboard does not display a raw message-by-message transcript. No raw message records or message text are stored; it explores the complete set of aggregates available to Barkly Access.
 
-- `startScan({ conversationId, signal })`
-- `getNextBatch({ conversationId, signal })` → `{ records, done, complete, source }`
-- optional `cancelScan({ conversationId })`
-- optional `dispose({ conversationId })`
+## Coverage and known limits
 
-The current adapter returns one non-complete batch of visible metadata. Another authorized provider can implement older-history pagination without changing the analytics/store modules.
+- The source is the visible Discord UI. Discord does not expose a definitive total-history count to this adapter, so the UI cannot certify full-history coverage.
+- Collection status records batches, encountered rows, newly processed unique IDs, duplicate rows ignored, elapsed time, and its stopping reason. No percentage estimate is shown.
+- Direction is marked unknown unless the current user's identity is safely available. The current adapter intentionally avoids Discord internal user stores and therefore reports direction as unknown.
+- Rows without a stable message ID or author ID are skipped. Discord class names and virtual scrolling behavior can change, so selectors and scroll behavior may need maintenance.
+- Hourly totals are stored overall, not per date. Date-filtered dashboard views say hourly results are unavailable for that range rather than presenting misleading values.
+- Person daily/hourly aggregates include only messages with usable timestamps; undated messages still contribute to lifetime direction totals.

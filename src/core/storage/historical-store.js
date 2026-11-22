@@ -34,7 +34,7 @@ export class HistoricalStore {
         people[String(personId)] = {
           authorId: String(personId), name: safeString(person.name, 100) || String(personId),
           sent: count(person.sent), received: count(person.received), unknown: count(person.unknown),
-          total: count(person.total), lastTimestamp: finiteOrNull(person.lastTimestamp),
+          total: count(person.total), firstTimestamp: finiteOrNull(person.firstTimestamp), lastTimestamp: finiteOrNull(person.lastTimestamp),
           daily: countMap(person.daily), dailySent: countMap(person.dailySent), dailyReceived: countMap(person.dailyReceived), dailyUnknown: countMap(person.dailyUnknown),
           hourly: countArray(person.hourly), hourlySent: countArray(person.hourlySent), hourlyReceived: countArray(person.hourlyReceived), hourlyUnknown: countArray(person.hourlyUnknown),
         };
@@ -52,6 +52,10 @@ export class HistoricalStore {
           scope: "messages rendered in the selected conversation", complete: raw.coverage?.complete === true,
           recordsProcessed: count(raw.coverage?.recordsProcessed), oldestTimestamp: finiteOrNull(raw.coverage?.oldestTimestamp),
           newestTimestamp: finiteOrNull(raw.coverage?.newestTimestamp), source: safeString(raw.coverage?.source, 80),
+          startedAt: finiteOrNull(raw.coverage?.startedAt), durationMs: count(raw.coverage?.durationMs),
+          encountered: count(raw.coverage?.encountered), duplicatesIgnored: count(raw.coverage?.duplicatesIgnored),
+          batches: count(raw.coverage?.batches), stopReason: safeString(raw.coverage?.stopReason, 80),
+          interrupted: raw.coverage?.interrupted === true,
         },
         updatedAt: count(raw.updatedAt),
         ...(raw.error ? { error: safeString(raw.error, 240) } : {}),
@@ -167,7 +171,7 @@ export class HistoricalStore {
   addRecord(entry, record) {
     const authorId = record.authorId;
     const person = entry.people[authorId] || {
-      authorId, name: record.authorName || authorId, sent: 0, received: 0, unknown: 0, total: 0, lastTimestamp: null,
+      authorId, name: record.authorName || authorId, sent: 0, received: 0, unknown: 0, total: 0, firstTimestamp: null, lastTimestamp: null,
       daily: {}, dailySent: {}, dailyReceived: {}, dailyUnknown: {}, hourly: Array(24).fill(0),
       hourlySent: Array(24).fill(0), hourlyReceived: Array(24).fill(0), hourlyUnknown: Array(24).fill(0),
     };
@@ -175,7 +179,10 @@ export class HistoricalStore {
     const direction = record.isSelf === true ? "sent" : record.isSelf === false ? "received" : "unknown";
     person[direction]++;
     person.total++;
-    if (record.timestamp != null) person.lastTimestamp = Math.max(person.lastTimestamp || 0, record.timestamp);
+    if (record.timestamp != null) {
+      person.firstTimestamp = Math.min(person.firstTimestamp ?? record.timestamp, record.timestamp);
+      person.lastTimestamp = Math.max(person.lastTimestamp || 0, record.timestamp);
+    }
     entry.people[authorId] = person;
     entry.totals[direction]++;
     if (record.timestamp != null) {

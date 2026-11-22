@@ -1,73 +1,125 @@
-/** Scrolls the selected UI conversation to request older rendered rows and reads metadata only. */
+/**
+ * Backfills only message rows currently exposed by Discord's visible interface.
+ * It intentionally does not read Discord's private stores or call its APIs.
+ */
 export class RenderedHistoryAdapter {
-  constructor({ getSelectedConversation, getCurrentUserId, getDocument = () => document, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), maxBatches = 250, stablePasses = 3 }) {
+  constructor({ getSelectedConversation, getCurrentUserId, getDocument = () => document,
+    wait = ms => new Promise(resolve => setTimeout(resolve, ms)), maxBatches = 250,
+    stablePasses = 3, renderDelay = 450, scrollStepRatio = 0.72 }) {
     this.getSelectedConversation = getSelectedConversation;
     this.getCurrentUserId = getCurrentUserId;
     this.getDocument = getDocument;
     this.wait = wait;
     this.maxBatches = maxBatches;
     this.stablePasses = stablePasses;
+    this.renderDelay = renderDelay;
+    this.scrollStepRatio = scrollStepRatio;
   }
 
   async startScan({ conversationId }) {
     if (String(this.getSelectedConversation()) !== String(conversationId)) throw new Error("Conversation is no longer selected");
-    const root = this.getDocument().querySelector('[class*="scrollerInner"]');
+    const root = this.findMessageRoot();
     if (!root) throw new Error("The selected conversation has no rendered message list");
     const scroller = this.getScrollContainer(root);
-    const rootRect = scroller.getBoundingClientRect?.();
+    const rect = scroller.getBoundingClientRect?.();
     const anchor = [...root.querySelectorAll('[class*="messageListItem"]')]
-      .find(row => !rootRect || row.getBoundingClientRect?.().bottom > rootRect.top);
+      .find(row => !rect || row.getBoundingClientRect?.().bottom > rect.top);
     this.scan = {
       conversationId: String(conversationId), root, scroller,
-      initialTop: scroller.scrollTop || 0,
-      initialHeight: root.scrollHeight || 0,
-      anchorId: anchor?.id || anchor?.getAttribute("data-list-item-id") || "",
-      anchorOffset: anchor && rootRect ? anchor.getBoundingClientRect().top - rootRect.top : null,
-      previousSignature: "", noProgress: 0, batches: 0, cancelled: false,
+      initialTop: Number(scroller.scrollTop) || 0,
+      initialHeight: Number(scroller.scrollHeight) || Number(root.scrollHeight) || 0,
+      anchorId: this.rowId(anchor),
+      anchorOffset: anchor && rect ? anchor.getBoundingClientRect().top - rect.top : null,
+      previousSignature: "", previousTop: Number(scroller.scrollTop) || 0,
+      noProgress: 0, batches: 0, encountered: 0, uniqueSeen: new Set(),
+      startedAt: Date.now(), stopReason: null,
     };
   }
 
   async getNextBatch({ conversationId, signal }) {
-    if (String(this.getSelectedConversation()) !== String(conversationId) || signal?.aborted) return { records: [], done: true, complete: false, source: "rendered-discord-ui" };
     const scan = this.scan;
-    let root = this.getDocument().querySelector('[class*="scrollerInner"]');
-    if (!root) return { records: [], done: true, complete: false, source: "rendered-discord-ui" };
+    if (!scan || String(this.getSelectedConversation()) !== String(conversationId) || signal?.aborted) {
+      return { records: [], done: true, complete: false, stopReason: "interrupted", source: "rendered-discord-ui" };
+    }
+    let root = this.findMessageRoot() || scan.root;
+    let scroller = this.getScrollContainer(root);
+    if (!root.isConnected || !scroller.isConnected) return { records: [], done: true, complete: false, stopReason: "conversation-view-unavailable", source: "rendered-discord-ui" };
     scan.root = root;
-    const beforeSignature = this.messageSignature(root);
-    const beforeHeight = root.scrollHeight || 0;
-    // Use the selected conversation's ordinary scroll UI to ask Discord to
-    // render older rows. No API request or private message store is accessed.
-    const scroller = this.getScrollContainer(root);
-    scroller.scrollTop = 0;
-    await this.wait(500);
-    if (String(this.getSelectedConversation()) !== String(conversationId) || signal?.aborted) return { records: [], done: true, complete: false, source: "rendered-discord-ui" };
-    root = this.getDocument().querySelector('[class*="scrollerInner"]') || root;
-    const rows = root ? [...root.querySelectorAll('[class*="messageListItem"]')] : [];
-    const selfId = this.getCurrentUserId();
+    scan.scroller = scroller;
+
+    const rows = [...root.querySelectorAll('[class*="messageListItem"]')];
+    const selfId = this.getCurrentUserId?.() ?? null;
     const records = rows.flatMap(row => {
-      const messageId = row.id?.match(/chat-messages-(\d+)/)?.[1]
-        || row.getAttribute("data-list-item-id")?.match(/(\d{15,})/)?.[1];
-      const userLink = row.querySelector('a[href*="/users/"]')?.getAttribute("href")?.match(/\/users\/(\d+)/)?.[1];
-      const avatar = row.querySelector('img[src*="/avatars/"]')?.getAttribute("src")?.match(/\/avatars\/(\d+)/)?.[1];
-      const authorId = row.getAttribute("data-user-id") || userLink || avatar;
-      if (!messageId || !authorId) return [];
+      const messageId = this.rowId(row);
+      if (!messageId) return [];
+      const authorId = row.getAttribute("data-user-id")
+        || row.querySelector('a[href*="/users/"]')?.getAttribute("href")?.match(/\/users\/(\d+)/)?.[1]
+        || row.querySelector('img[src*="/avatars/"]')?.getAttribute("src")?.match(/\/avatars\/(\d+)/)?.[1];
+      if (!authorId) return [];
       const authorName = row.querySelector('[class*="username"]')?.textContent?.trim() || "";
-      const timeElement = row.querySelector("time[datetime]");
-      const timestamp = timeElement ? Date.parse(timeElement.getAttribute("datetime")) : NaN;
-      return [{ messageId, authorId, authorName, timestamp: Number.isFinite(timestamp) ? timestamp : null, isSelf: selfId == null ? null : String(authorId) === String(selfId) }];
+      const time = row.querySelector("time[datetime]")?.getAttribute("datetime");
+      const parsed = time ? Date.parse(time) : NaN;
+      return [{ messageId, authorId, authorName, timestamp: Number.isFinite(parsed) ? parsed : null,
+        isSelf: selfId == null ? null : String(authorId) === String(selfId) }];
     });
+    scan.encountered += records.length;
+    for (const record of records) scan.uniqueSeen.add(record.messageId);
+
+    const beforeTop = Number(scroller.scrollTop) || 0;
+    const beforeSignature = this.messageSignature(root);
+    const beforeHeight = Number(scroller.scrollHeight) || Number(root.scrollHeight) || 0;
+    const step = Math.max(160, Math.floor((Number(scroller.clientHeight) || 700) * this.scrollStepRatio));
+    // Moving by a fraction of the viewport causes overlapping render batches and
+    // gives Discord time to expose intermediate history instead of skipping it.
+    scroller.scrollTop = Math.max(0, beforeTop - step);
+    try { scroller.dispatchEvent(new (this.getDocument().defaultView?.Event || Event)("scroll", { bubbles: true })); } catch { /* Native scroll assignment still works. */ }
+    await this.wait(this.renderDelay);
+    if (String(this.getSelectedConversation()) !== String(conversationId) || signal?.aborted) {
+      return { records, done: true, complete: false, stopReason: "interrupted", source: "rendered-discord-ui" };
+    }
+
+    root = this.findMessageRoot() || root;
+    scroller = this.getScrollContainer(root);
+    scan.root = root; scan.scroller = scroller;
+    const afterTop = Number(scroller.scrollTop) || 0;
     const afterSignature = this.messageSignature(root);
-    const changed = beforeSignature !== afterSignature || beforeHeight !== (root.scrollHeight || 0);
-    scan.noProgress = changed ? 0 : scan.noProgress + 1;
+    const afterHeight = Number(scroller.scrollHeight) || Number(root.scrollHeight) || 0;
+    const changed = beforeSignature !== afterSignature || beforeHeight !== afterHeight;
+    const moved = Math.abs(afterTop - beforeTop) > 1;
+    scan.noProgress = changed || moved ? 0 : scan.noProgress + 1;
     scan.batches++;
-    const done = scan.noProgress >= this.stablePasses || scan.batches >= this.maxBatches;
-    return { records, done, complete: false, source: "rendered-discord-ui", progress: { batches: scan.batches, stablePasses: scan.noProgress } };
+    const atOldestVisibleEdge = afterTop <= 2;
+    const stagnantAtEdge = atOldestVisibleEdge && scan.noProgress >= this.stablePasses;
+    const stalled = !moved && !changed && scan.noProgress >= this.stablePasses;
+    const exhausted = scan.batches >= this.maxBatches;
+    const done = stagnantAtEdge || stalled || exhausted;
+    const stopReason = exhausted ? "batch-limit" : stagnantAtEdge ? "oldest-visible-edge-stable" : stalled ? "scroll-stagnation" : null;
+    if (done) scan.stopReason = stopReason;
+    return { records, done, complete: false, stopReason,
+      source: "rendered-discord-ui",
+      progress: { batches: scan.batches, encountered: scan.encountered, uniqueInScan: scan.uniqueSeen.size,
+        stablePasses: scan.noProgress, scrollTop: afterTop, atOldestVisibleEdge } };
+  }
+
+  findMessageRoot() {
+    const doc = this.getDocument();
+    const candidates = [...doc.querySelectorAll('[class*="scrollerInner"]')]
+      .filter(node => node.querySelector('[class*="messageListItem"]'));
+    if (!candidates.length) return null;
+    // Avoid sidebars and hidden panes by choosing the visible list with the most rows.
+    return candidates.map(node => ({ node, count: node.querySelectorAll('[class*="messageListItem"]').length,
+      visible: !!(node.getClientRects?.().length) }))
+      .sort((a, b) => Number(b.visible) - Number(a.visible) || b.count - a.count)[0].node;
+  }
+
+  rowId(row) {
+    return row?.id?.match(/chat-messages-(\d+)/)?.[1]
+      || row?.getAttribute("data-list-item-id")?.match(/(\d{15,})/)?.[1]
+      || null;
   }
 
   messageSignature(root) {
-    return [...root.querySelectorAll('[class*="messageListItem"]')]
-      .map(row => row.id || row.getAttribute("data-list-item-id") || "")
-      .join("|");
+    return [...root.querySelectorAll('[class*="messageListItem"]')].map(row => this.rowId(row) || "").join("|");
   }
 
   getScrollContainer(root) {
@@ -75,31 +127,32 @@ export class RenderedHistoryAdapter {
     while (current?.parentElement) {
       current = current.parentElement;
       const className = typeof current.className === "string" ? current.className : "";
-      if (className.includes("scrollerBase")) return current;
       const style = this.getDocument().defaultView?.getComputedStyle?.(current);
-      if (style && /(auto|scroll|overlay)/.test(`${style.overflowY} ${style.overflow}`)
-          && current.scrollHeight > current.clientHeight + 2) return current;
+      const scrollable = style && /(auto|scroll|overlay)/.test(`${style.overflowY} ${style.overflow}`)
+        && current.scrollHeight > current.clientHeight + 2;
+      if (className.includes("scrollerBase") || scrollable) return current;
       if (current === this.getDocument().body) break;
     }
     return root;
   }
 
-  async cancelScan() { if (this.scan) this.scan.cancelled = true; }
+  async cancelScan() { if (this.scan) this.scan.stopReason = "cancelled"; }
 
   async dispose({ conversationId } = {}) {
     const scan = this.scan;
     if (!scan) return;
     const selected = String(this.getSelectedConversation()) === String(conversationId || scan.conversationId);
-    const messageRoot = this.getDocument().querySelector('[class*="scrollerInner"]') || scan.root;
-    const rootRect = scan.scroller.getBoundingClientRect?.();
-    const anchor = scan.anchorId && [...messageRoot.querySelectorAll('[class*="messageListItem"]')]
-      .find(row => row.id === scan.anchorId || row.getAttribute("data-list-item-id") === scan.anchorId);
-    if (selected && anchor && rootRect && scan.anchorOffset != null) {
-      const offsetNow = anchor.getBoundingClientRect().top - rootRect.top;
-      scan.scroller.scrollTop += offsetNow - scan.anchorOffset;
+    const root = this.findMessageRoot() || scan.root;
+    const scroller = this.getScrollContainer(root);
+    const rect = scroller.getBoundingClientRect?.();
+    const anchor = scan.anchorId && [...root.querySelectorAll('[class*="messageListItem"]')]
+      .find(row => this.rowId(row) === scan.anchorId);
+    if (selected && anchor && rect && scan.anchorOffset != null) {
+      scroller.scrollTop += anchor.getBoundingClientRect().top - rect.top - scan.anchorOffset;
     } else if (selected) {
-      const addedHeight = Math.max(0, (messageRoot.scrollHeight || 0) - scan.initialHeight);
-      scan.scroller.scrollTop = scan.initialTop + addedHeight;
+      const currentHeight = Number(scroller.scrollHeight) || Number(root.scrollHeight) || scan.initialHeight;
+      const addedHeight = Math.max(0, currentHeight - scan.initialHeight);
+      scroller.scrollTop = Math.min(scroller.scrollHeight, scan.initialTop + addedHeight);
     }
     this.scan = null;
   }

@@ -25,6 +25,8 @@ test("historical store aggregates direction and time while persisting no raw mes
   const entry = store.getConversation("conversation-1");
   assert.deepEqual(entry.totals, { sent: 1, received: 1, unknown: 1 });
   assert.equal(entry.people.p1.total, 2);
+  assert.equal(entry.people.p1.firstTimestamp, Date.UTC(2026, 0, 1, 2));
+  assert.equal(entry.people.p1.lastTimestamp, Date.UTC(2026, 0, 1, 2));
   assert.equal(entry.daily["2026-01-01"], 2);
   assert.equal(entry.hourly[2], 1);
   assert.equal(entry.coverage.complete, false);
@@ -103,6 +105,34 @@ test("collection coordinator handles selected source batches, duplicate refreshe
   assert.equal(store.getConversation("c1").people.u1.total, 1);
 });
 
+test("multi-batch scans count overlap once, persist run coverage, and remain idempotent after reload", async () => {
+  let saved = null;
+  const load = () => saved;
+  const save = value => { saved = structuredClone(value); };
+  const store = new HistoricalStore({ load, save });
+  const batches = [
+    { records: [{ id: "a", author_id: "p", timestamp: Date.UTC(2026, 0, 1) }, { id: "b", author_id: "p" }], done: false },
+    { records: [{ id: "b", author_id: "p" }, { id: "c", author_id: "q" }], done: true, stopReason: "oldest-visible-edge-stable" },
+  ];
+  const adapter = { async startScan() {}, async getNextBatch() { return batches.shift(); }, async dispose() {} };
+  const result = await new CollectionCoordinator({ adapter, store }).collect("c");
+  assert.equal(result.status, "partial");
+  assert.equal(result.processed, 3);
+  assert.equal(result.duplicates, 1);
+  assert.equal(result.encountered, 4);
+  assert.equal(result.batches, 2);
+  assert.equal(store.getConversation("c").coverage.stopReason, "oldest-visible-edge-stable");
+  assert.equal(store.getConversation("c").coverage.duplicatesIgnored, 1);
+
+  const restarted = new HistoricalStore({ load, save });
+  const repeat = await new CollectionCoordinator({ adapter: {
+    async startScan() {}, async getNextBatch() { return { records: [{ id: "a", author_id: "p" }], done: true }; },
+  }, store: restarted }).collect("c");
+  assert.equal(repeat.processed, 0);
+  assert.equal(repeat.duplicates, 1);
+  assert.equal(restarted.getConversation("c").people.p.total, 2);
+});
+
 test("rendered adapter reads only the selected conversation's rendered message metadata", async () => {
   const row = {
     id: "chat-messages-123456789012345678",
@@ -115,10 +145,13 @@ test("rendered adapter reads only the selected conversation's rendered message m
       return null;
     },
   };
+  const root = mockMessageRoot(() => [row]);
   const adapter = new RenderedHistoryAdapter({
     getSelectedConversation: () => "456789012345678901",
     getCurrentUserId: () => "111111111111111111",
-    getDocument: () => ({ querySelector: () => ({ querySelectorAll: () => [row] }) }),
+    getDocument: () => root.document,
+    maxBatches: 1,
+    wait: async () => {},
   });
   await adapter.startScan({ conversationId: "456789012345678901" });
   const batch = await adapter.getNextBatch({ conversationId: "456789012345678901" });
@@ -139,12 +172,12 @@ test("rendered adapter scrolls the selected message list to load older rows then
         : selector.includes("time") ? { getAttribute: () => "2026-02-01T00:00:00Z" } : null,
   });
   rows = [row("123456789012345678")];
-  const root = { scrollTop: 400, scrollHeight: 1000, clientHeight: 500, querySelectorAll: () => rows };
+  const dom = mockMessageRoot(() => rows, { initialTop: 400 });
   let waits = 0;
   const adapter = new RenderedHistoryAdapter({
     getSelectedConversation: () => "456789012345678901", getCurrentUserId: () => null,
-    getDocument: () => ({ body: {}, querySelector: () => root }),
-    wait: async () => { waits++; if (waits <= 2) { rows = [row(`${123456789012345678n - BigInt(waits)}`), ...rows]; root.scrollHeight += 100; } },
+    getDocument: () => dom.document,
+    wait: async () => { waits++; if (waits === 1) { rows = [row(`${123456789012345678n - BigInt(waits)}`), ...rows]; dom.scroller.scrollHeight += 100; } else if(waits===2) { rows = [row(`${123456789012345678n - BigInt(waits)}`), rows[0]]; dom.scroller.scrollHeight += 100; } },
     maxBatches: 20, stablePasses: 3,
   });
   await adapter.startScan({ conversationId: "456789012345678901" });
@@ -152,10 +185,24 @@ test("rendered adapter scrolls the selected message list to load older rows then
   do { batch = await adapter.getNextBatch({ conversationId: "456789012345678901" }); } while (!batch.done);
   assert.equal(waits, 5);
   assert.equal(batch.complete, false);
-  assert.equal(root.scrollTop, 0);
+  assert.equal(dom.scroller.scrollTop, 0);
   await adapter.dispose({ conversationId: "456789012345678901" });
-  assert.equal(root.scrollTop, 600);
+  assert.equal(dom.scroller.scrollTop, 600);
+  assert.equal(adapter.scan, null);
 });
+
+function mockMessageRoot(getRows, { initialTop = 0 } = {}) {
+  const body = { parentElement: null };
+  const scroller = { className: "scrollerBase", isConnected: true, parentElement: body,
+    scrollTop: initialTop, scrollHeight: 1000, clientHeight: 500,
+    getBoundingClientRect: () => ({ top: 0 }), dispatchEvent: () => {} };
+  const root = { className: "scrollerInner", isConnected: true, parentElement: scroller,
+    getClientRects: () => [{}], querySelector: selector => selector.includes("messageListItem") ? getRows()[0] || null : null,
+    querySelectorAll: selector => selector.includes("messageListItem") ? getRows() : [] };
+  const document = { body, defaultView: { getComputedStyle: () => ({ overflowY: "auto", overflow: "auto" }), Event },
+    querySelectorAll: selector => selector.includes("scrollerInner") ? [root] : [] };
+  return { root, scroller, document };
+}
 
 test("conversation selection reads the opened channel or DM route", () => {
   assert.equal(getSelectedConversationId("/channels/123456789012345678/234567890123456789"), "234567890123456789");

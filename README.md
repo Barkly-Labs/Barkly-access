@@ -1,45 +1,42 @@
 # Barkly Access
 
-**Accessibility tools for Discord, built around PAW-HC: People Are Worth Designing For.** Barkly Access adds reversible reading controls and locally stored conversation statistics.
+**Accessibility tools for Discord, built around PAW-HC: People Are Worth Designing For.** Barkly Access adds reversible reading controls and local, metadata-only conversation analytics.
 
 ## Features
 
 - Quiet View, readable message spacing, and numbered conversation chunks.
-- Automatic collection when a Discord conversation is opened: Barkly Access scrolls the selected UI to request older rows and counts each rendered batch.
-- Locally persisted counts by author, sent/received/unknown direction, activity by UTC day and hour, Frequent ranking, and historical coverage status.
-- Accessible Stats controls for search, time range, daily/weekly/monthly grouping, contact exclusions, and deletion.
-- Per-conversation and all-analytics clear controls.
+- Progressive history backfill through the selected conversation's visible Discord UI, with cancellation and best-effort reading-position restoration.
+- Locally persisted aggregate counts by conversation and person, UTC daily and hourly activity, collection status, and duplicate suppression.
+- A full-screen Analytics Dashboard with conversation/person/date filters, search, sorting, pagination, readable data tables, person details, text-size choices, and higher-contrast mode.
+- Clear-one-conversation and clear-all analytics controls.
+
+## Open analytics
+
+Open the Barkly Access panel, select **Stats**, then choose **Open Analytics Dashboard**. The dashboard shows stored totals and the collection limits. To backfill the selected conversation again, use **Backfill selected conversation**. The scan can be stopped at any time.
 
 ## Collection boundary
 
-Barkly Access does not call Discord private APIs or use personal tokens. When a conversation opens, it uses that conversation's visible scroll container to request older rows from Discord's ordinary UI, processes each rendered batch, then attempts to restore the original reading position. The scan stops after 3 unchanged passes or 250 batches and can be cancelled from Stats. Coverage is always marked partial because the UI does not confirm that all historical messages are available. Direction is reported as unknown; this integration avoids Discord's internal user store.
+Collection observes the selected route and the visible message list. It scrolls upward in overlapping steps, waits for newly rendered rows, extracts minimal metadata, and stops after the oldest visible edge is stable, scrolling stagnates, or a 250-batch safety limit is reached. It restores the previous reading context with a rendered message anchor where possible. This stopping condition does not prove that all server history has loaded; Discord exposes no definitive total-history count to this adapter.
 
-Discord and BetterDiscord can change their client UI. Selectors and rendered metadata are experimental and may stop working. The client integration has not been validated against a running Discord client in this workspace.
+The integration does not call Discord private APIs, access internal stores, or use personal tokens. Direction remains unknown because this adapter does not obtain the current user identity from an approved source. Rows without stable message and author IDs are skipped. Discord and BetterDiscord can change their UI selectors and scrolling behavior. The client integration has not been validated against a running Discord client in this workspace.
 
-## Privacy
+## Privacy and persistence
 
-Processing stays on the device. Raw message bodies are not read or persisted. The store keeps aggregates, author IDs and display labels needed for the dashboard, conversation IDs, and a bounded list of non-cryptographic message-ID fingerprints for duplicate suppression. Fingerprints are local pseudonymous identifiers, not anonymization. The list is limited to 20,000 entries per conversation, so older messages can be counted again after eviction. View preferences and analytics are saved locally through BetterDiscord's Data API. Use **Clear this conversation** or **Clear all analytics** to delete analytics.
+Processing stays on the device. Message bodies and attachments are not read or stored. The local store keeps aggregates, author IDs and display labels needed for the dashboard, conversation IDs, collection metadata, and up to 250,000 compact non-cryptographic message-ID fingerprints per conversation for duplicate suppression. Fingerprints are pseudonymous local identifiers, not anonymization. Once that bound is reached, older fingerprints are evicted and a revisited old message could be counted again. Use the clear controls in Stats to erase saved analytics.
+
+No raw message-by-message transcript is retained. The dashboard explores all aggregate data the plugin saves.
 
 See [Privacy](docs/PRIVACY.md), [Analytics and collection](docs/ANALYTICS.md), and [Architecture](docs/ARCHITECTURE.md).
 
 ## Build, test, install
 
-Requires Node.js 20 or newer.
+Requires Node.js and the platform-specific optional binary for the locked `esbuild` version.
 
 ```sh
-npm install
+npm ci
 npm test
-npm run build
 ```
 
-The standalone plugin is generated at `dist/BarklyAccess.plugin.js`. Copy that file into BetterDiscord's Plugins folder using **User Settings → BetterDiscord → Plugins → Open Plugins Folder**, then enable **BarklyAccess**. BetterDiscord's [addon guide](https://docs.betterdiscord.app/users/guides/installing-addons) provides current installation steps.
-
-## Limitations
-
-- Counts represent messages that Discord rendered in the selected conversation during plugin use; full-history completeness cannot be verified.
-- Collection automatically scrolls the selected conversation to load older history and restores the reading position when possible.
-- Sent/received classification is unknown without a safe, supported current-user identity source.
-- The UI adapter relies on unstable Discord DOM selectors.
-- Optional JSON import remains available under Frequent for local testing; it is not required for automatic Stats collection.
+The test command builds the standalone plugin at `dist/BarklyAccess.plugin.js` and runs the tests. Copy that file into BetterDiscord's Plugins folder and reload plugins.
 
 MIT License. See [LICENSE](LICENSE).
