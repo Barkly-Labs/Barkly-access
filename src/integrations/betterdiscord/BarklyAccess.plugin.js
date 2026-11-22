@@ -8,6 +8,7 @@ module.exports = class BarklyAccess {
   constructor() {
     this.styleId = 'barkly-access-quiet-view';
     this.panelId = 'barkly-access-panel';
+    this.memberTabId = 'barkly-access-frequent';
     this.state = { quiet: false, layout: false, numbered: false, showMembers: false, showChannels: false, showToolbar: false };
     this.classes = { quiet: 'ba-quiet', layout: 'ba-readable-layout', numbered: 'ba-numbered-chat', members: 'ba-hide-members', channels: 'ba-hide-channels', toolbar: 'ba-hide-toolbar' };
     this.chunkClasses = ['ba-chunk-start','ba-chunk-middle','ba-chunk-end','ba-chunk-single'];
@@ -41,9 +42,17 @@ module.exports = class BarklyAccess {
   createPanel(){
     if(document.getElementById(this.panelId)) return;
     const p=document.createElement('aside'); p.id=this.panelId; p.setAttribute('aria-label','Barkly Access');
-    p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span>＋</span></button><div class="ba-options" hidden><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></div>`;
-    p.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.classList.contains('ba-main')){const d=p.querySelector('.ba-options');d.hidden=!d.hidden;b.setAttribute('aria-expanded',String(!d.hidden));b.querySelector('span').textContent=d.hidden?'＋':'−';return;}const a=b.dataset.action;if(a==='restore')this.restore();else if(a==='quiet')this.toggleQuiet();else if(a)this.toggle(a);});
-    document.body.appendChild(p);this.panel=p;this.updatePanel();
+    p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span>＋</span></button><div class="ba-options" hidden><div class="ba-tabs"><button type="button" data-tab="controls" class="ba-tab-active">Access</button><button type="button" data-tab="frequent">Frequent</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></section><section data-pane="frequent" hidden><p class="ba-summary">Most active people in the messages currently loaded on screen. Counts stay local and refresh as chat changes.</p><button type="button" data-action="refreshFrequent">Refresh list</button><ol class="ba-frequent-list" aria-live="polite"></ol></section></div>`;
+    p.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.tab){p.querySelectorAll('[data-pane]').forEach(x=>x.hidden=x.dataset.pane!==b.dataset.tab);p.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('ba-tab-active',x===b));if(b.dataset.tab==='frequent')this.refreshFrequent();return;}if(b.classList.contains('ba-main')){const d=p.querySelector('.ba-options');d.hidden=!d.hidden;b.setAttribute('aria-expanded',String(!d.hidden));b.querySelector('span').textContent=d.hidden?'＋':'−';return;}const a=b.dataset.action;if(a==='restore')this.restore();else if(a==='refreshFrequent')this.refreshFrequent();else if(a==='quiet')this.toggleQuiet();else if(a)this.toggle(a);});
+    document.body.appendChild(p);this.panel=p;this.updatePanel();this.refreshFrequent();
+  }
+  refreshFrequent(){
+    if(!this.panel)return; const list=this.panel.querySelector('.ba-frequent-list'); if(!list)return; list.replaceChildren();
+    const root=document.querySelector('[class*=scrollerInner]'); const nodes=root?[...root.querySelectorAll('[class*=messageListItem]')]:[]; const counts=new Map();
+    nodes.forEach(n=>{const author=n.querySelector('[class*=username]');const name=(author?.textContent||'').trim();if(!name)return;counts.set(name,(counts.get(name)||0)+1);});
+    const sorted=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,10);
+    if(!sorted.length){const li=document.createElement('li');li.textContent='No visible messages to count yet.';list.appendChild(li);return;}
+    sorted.forEach(([name,count],i)=>{const li=document.createElement('li');li.className='ba-frequent-item';const rank=document.createElement('span');rank.className='ba-rank';rank.textContent=String(i+1);const label=document.createElement('span');label.className='ba-frequent-name';label.textContent=name;const amount=document.createElement('span');amount.className='ba-frequent-count';amount.textContent=`${count} loaded`;li.append(rank,label,amount);list.appendChild(li);});
   }
   updatePanel(){ if(!this.panel)return; this.panel.querySelectorAll('[data-action]').forEach(b=>{const k=b.dataset.action;if(k==='restore')return;const on=k==='quiet'?this.state.quiet:this.state[k];b.setAttribute('aria-pressed',String(!!on));b.classList.toggle('ba-on',!!on);const labels={quiet:'Quiet view',layout:'Readable chat layout',numbered:'Conversation cards',showMembers:'Member list',showChannels:'Channel list',showToolbar:'Chat toolbar'};b.textContent=(k==='quiet'||k==='layout'||k==='numbered')?`${labels[k]} · ${on?'On':'Off'}`:`${labels[k]} · ${on?'Shown':'Hidden'}`;});}
   stop(){document.removeEventListener('keydown',this.onKeyDown,true);this.chunkObserver?.disconnect();document.querySelectorAll('[class*=messageListItem]').forEach(n=>this.chunkClasses.forEach(c=>n.classList.remove(c)));Object.values(this.classes).forEach(c=>document.body.classList.remove(c));BdApi.DOM.removeStyle(this.styleId);document.getElementById(this.panelId)?.remove();}
@@ -95,6 +104,15 @@ module.exports = class BarklyAccess {
     #${this.panelId} .ba-options{padding:8px 10px 10px;} #${this.panelId} .ba-options[hidden]{display:none;}
     #${this.panelId} .ba-summary,#${this.panelId} .ba-help{color:#ccc;font-size:12px;margin:8px 2px;}
     #${this.panelId} .ba-extra{border-top:1px solid #292929;margin-top:8px;padding-top:4px;}
+    #${this.panelId} .ba-tabs{display:flex;gap:6px;padding:8px 10px 0;}
+    #${this.panelId} .ba-tabs button{flex:1;width:auto;text-align:center;margin:0;padding:8px;}
+    #${this.panelId} .ba-tab-active{background:#ff4fa3!important;color:#090909!important;font-weight:700;}
+    #${this.panelId} [data-pane][hidden]{display:none!important;}
+    #${this.panelId} .ba-frequent-list{list-style:none;padding:0;margin:8px 0;display:grid;gap:6px;}
+    #${this.panelId} .ba-frequent-item{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px;background:#101010;border:1px solid #292929;border-radius:8px;}
+    #${this.panelId} .ba-rank{display:grid;place-items:center;background:#ff4fa3;color:#090909;border-radius:8px;font-weight:800;height:26px;}
+    #${this.panelId} .ba-frequent-name{overflow-wrap:anywhere;font-weight:600;}
+    #${this.panelId} .ba-frequent-count{color:#aaa;font-size:11px;white-space:nowrap;}
     #${this.panelId} button.ba-on{border-color:#ff8bc5;box-shadow:inset 3px 0 #ff4fa3;}
     #${this.panelId} .ba-restore{background:#ff8bc5;color:#090909;font-weight:700;}
   `;}

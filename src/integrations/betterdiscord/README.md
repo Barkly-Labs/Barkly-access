@@ -19,3 +19,7 @@ This relies on Discord's internal CSS class names, which are unstable. Validate 
 When **Conversation cards** is enabled, the adapter groups a burst of adjacent messages into a single visual chunk, regardless of sender. A chunk ends when the timestamp gap exceeds 15 minutes (or timestamps cannot be read). The first message displays a pink numbered anchor; following messages share the chunk surface with subtle separators. This avoids treating every message as a separate card and makes short exchanges easier to scan. The grouping is presentation-only and does not change, filter, or reorder messages.
 
 Discord's internal DOM and timestamps are unstable; verify this behavior in the client. The 15-minute boundary is a prototype heuristic.
+
+## Frequent people tab (experimental)
+
+The plugin panel now has an **Access** tab and a **Frequent** tab. Frequent ranks up to ten author names by message count among message rows currently rendered in the open channel, using the client DOM at refresh time. It is a temporary, local view—not a persistent contact-ranking history—and does not read message contents, send data, or store counts. Refresh manually or open the tab to recalculate. Internal Discord selectors may break; counts are approximate and limited to loaded/rendered messages.

@@ -13,3 +13,10 @@
 - Group short message bursts into visual chunks, including messages from different people, rather than making each message a standalone card.
 - Number each chunk as a navigation landmark; keep message content unchanged and in original order.
 - Prototype heuristic: 15-minute time gap. User testing should evaluate whether this grouping window makes sense and should become configurable.
+
+## Frequent people tab (experimental)
+
+- **Transparency:** the tab explains that ranking is based only on messages currently loaded/rendered in the open channel.
+- **Privacy:** names/counts are calculated locally on refresh, are not persisted, and no message content or data is sent externally.
+- **Agency:** tab is optional and does not alter Discord's native member list.
+- **Limitations:** counts are approximate, channel-scoped and dependent on unstable DOM selectors; do not interpret as a measure of relationship quality or overall interaction.

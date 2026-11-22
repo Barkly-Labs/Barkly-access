@@ -33,3 +33,7 @@ Review `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, and `docs/PAW-HC-REVIEW.md`. P
 ## License
 
 MIT — see `LICENSE`.
+
+### Frequent people tab (experimental)
+
+The BetterDiscord adapter includes a local **Frequent** tab that ranks author names in currently rendered messages in the open channel. It is a transient approximate count, not a persisted social ranking. It does not inspect message text or transmit data. See the adapter README for limitations.
