@@ -1,0 +1,23 @@
+{
+  "lastVisit": "2026-11-21T20:00:00Z",
+  "items": [
+    {
+      "id": "sample-1",
+      "channel": "#project-chat",
+      "author": "Alex",
+      "kind": "mention",
+      "text": "Could you review the draft when you have time?",
+      "timestamp": "2026-11-21T21:00:00Z",
+      "url": "#sample-1"
+    },
+    {
+      "id": "sample-2",
+      "channel": "#general",
+      "author": "Sam",
+      "kind": "update",
+      "text": "We moved the meetup to Saturday.",
+      "timestamp": "2026-11-21T21:15:00Z",
+      "url": "#sample-2"
+    }
+  ]
+}
