@@ -1,7 +1,7 @@
 /**
  * @name BarklyAccess
  * @author Barkly Labs
- * @version 0.5.0
+ * @version 0.6.0
  * @description Reduce competing chat UI elements with a reversible, user-controlled Quiet View.
  */
 module.exports = class BarklyAccess {
@@ -38,20 +38,26 @@ module.exports = class BarklyAccess {
   createPanel(){
     if(document.getElementById(this.panelId)) return;
     const p=document.createElement('aside'); p.id=this.panelId; p.setAttribute('aria-label','Barkly Access');
-    p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span>＋</span></button><div class="ba-options" hidden><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Numbered conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></div>`;
+    p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span>＋</span></button><div class="ba-options" hidden><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></div>`;
     p.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.classList.contains('ba-main')){const d=p.querySelector('.ba-options');d.hidden=!d.hidden;b.setAttribute('aria-expanded',String(!d.hidden));b.querySelector('span').textContent=d.hidden?'＋':'−';return;}const a=b.dataset.action;if(a==='restore')this.restore();else if(a==='quiet')this.toggleQuiet();else if(a)this.toggle(a);});
     document.body.appendChild(p);this.panel=p;this.updatePanel();
   }
-  updatePanel(){ if(!this.panel)return; this.panel.querySelectorAll('[data-action]').forEach(b=>{const k=b.dataset.action;if(k==='restore')return;const on=k==='quiet'?this.state.quiet:this.state[k];b.setAttribute('aria-pressed',String(!!on));b.classList.toggle('ba-on',!!on);const labels={quiet:'Quiet view',layout:'Readable chat layout',numbered:'Numbered conversation cards',showMembers:'Member list',showChannels:'Channel list',showToolbar:'Chat toolbar'};b.textContent=(k==='quiet'||k==='layout'||k==='numbered')?`${labels[k]} · ${on?'On':'Off'}`:`${labels[k]} · ${on?'Shown':'Hidden'}`;});}
+  updatePanel(){ if(!this.panel)return; this.panel.querySelectorAll('[data-action]').forEach(b=>{const k=b.dataset.action;if(k==='restore')return;const on=k==='quiet'?this.state.quiet:this.state[k];b.setAttribute('aria-pressed',String(!!on));b.classList.toggle('ba-on',!!on);const labels={quiet:'Quiet view',layout:'Readable chat layout',numbered:'Conversation cards',showMembers:'Member list',showChannels:'Channel list',showToolbar:'Chat toolbar'};b.textContent=(k==='quiet'||k==='layout'||k==='numbered')?`${labels[k]} · ${on?'On':'Off'}`:`${labels[k]} · ${on?'Shown':'Hidden'}`;});}
   stop(){document.removeEventListener('keydown',this.onKeyDown,true);Object.values(this.classes).forEach(c=>document.body.classList.remove(c));BdApi.DOM.removeStyle(this.styleId);document.getElementById(this.panelId)?.remove();}
   css(){return `
     /* Readable layout: hierarchy and grouping, without hiding message content. */
-    /* Numbered cards: visual landmarks, using a CSS counter. Experimental selectors. */
+    /* Conversation cards: message content is grouped into a clear, numbered card. Experimental selectors. */
     body.${this.classes.numbered} [class*='scrollerInner'] {counter-reset: barkly-message;}
-    body.${this.classes.numbered} [class*='messageListItem'] {counter-increment: barkly-message; position:relative; margin:10px 12px !important; padding:14px 14px 14px 54px !important; border:1px solid #292929; border-left:3px solid #ff4fa3; border-radius:12px; background:#101010; min-height:56px;}
-    body.${this.classes.numbered} [class*='messageListItem']::before {content:counter(barkly-message); position:absolute; left:12px; top:14px; display:flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:#ff4fa3; color:#090909; font-weight:800; font-size:13px;}
-    body.${this.classes.numbered} [class*='messageListItem']:hover {border-color:#ff8bc5;}
-    body.${this.classes.numbered} [class*='messageContent'] {line-height:1.65; max-width:78ch;}
+    body.${this.classes.numbered} [class*='messageListItem'] {counter-increment: barkly-message; position:relative; margin:14px 12px !important; padding:16px 18px 16px 62px !important; border:1px solid #292929; border-left:4px solid #ff4fa3; border-radius:16px; background:linear-gradient(110deg,#151015,#101010 42%); min-height:72px; box-shadow:0 2px 8px #0003;}
+    body.${this.classes.numbered} [class*='messageListItem']::before {content:counter(barkly-message); position:absolute; left:16px; top:16px; display:flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:10px; background:#ff4fa3; color:#090909; font-weight:800; font-size:14px; box-shadow:0 0 0 3px #ff4fa322;}
+    body.${this.classes.numbered} [class*='messageListItem']:hover {border-color:#ff8bc5; background:linear-gradient(110deg,#1b1018,#121212 42%);}
+    body.${this.classes.numbered} [class*='messageListItem'] [class*='contents'] {min-width:0;}
+    body.${this.classes.numbered} [class*='messageContent'] {line-height:1.7; max-width:72ch; overflow-wrap:anywhere;}
+    body.${this.classes.numbered} [class*='messageListItem'] [class*='header'] {display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; margin-bottom:6px;}
+    body.${this.classes.numbered} [class*='messageListItem'] [class*='avatar'] {border-radius:12px;}
+    body.${this.classes.numbered} [class*='messageListItem'] [class*='markup'] p {margin-block:4px;}
+    body.${this.classes.numbered} [class*='messageListItem'] [class*='attachment'], body.${this.classes.numbered} [class*='messageListItem'] [class*='embed'] {margin-top:10px; border-radius:12px;}
+    body.${this.classes.numbered} [class*='messageListItem'] [class*='repliedMessage'] {border-left:3px solid #ff8bc5; border-radius:6px; padding:6px 10px; margin-bottom:8px; background:#ff4fa308;}
     body.${this.classes.numbered} [class*='timestamp'] {opacity:.7; font-size:.82em;}
     body.${this.classes.layout} [class*="messageListItem"] {padding-block:8px !important;}
     body.${this.classes.layout} [class*="messageContent"] {line-height:1.6 !important;max-width:78ch;}
