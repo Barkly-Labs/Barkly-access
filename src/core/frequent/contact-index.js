@@ -1,14 +1,16 @@
 import { getConversationHref } from "../../integrations/betterdiscord/conversation-selection.js";
 import { canonicalAuthorId } from "../identity/stable-author.js";
+import { UNRESOLVED_AUTHOR_ID } from "../identity/participant-resolver.js";
 
 /** Builds the Frequent view from the same deduplicated aggregates used by Stats. */
-export function buildFrequentContacts(snapshot, { search = "", sort = "messages" } = {}) {
+export function buildFrequentContacts(snapshot, { search = "", sort = "messages", currentUserId = null } = {}) {
   const query = String(search).trim().toLocaleLowerCase();
+  const selfId = canonicalAuthorId(currentUserId);
   const contacts = new Map();
   for (const conversation of Object.values(snapshot?.conversations || {})) {
     for (const [authorId, person] of Object.entries(conversation.people || {})) {
       const stableId = canonicalAuthorId(person.authorId ?? authorId);
-      if (!stableId) continue;
+      if (!stableId || stableId === UNRESOLVED_AUTHOR_ID || (selfId && stableId === selfId)) continue;
       const total = Number.isFinite(person.total)
         ? person.total
         : (person.sent || 0) + (person.received || 0) + (person.unknown || 0);

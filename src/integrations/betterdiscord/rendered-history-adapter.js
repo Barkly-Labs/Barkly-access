@@ -7,16 +7,18 @@ import { getConversationHref } from "./conversation-selection.js";
 export function extractRenderedAuthor(row) {
   if (!row) return null;
   const direct = row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id")
-    || row.querySelector?.('[data-user-id], [data-author-id]')?.getAttribute?.("data-user-id")
-    || row.querySelector?.('[data-user-id], [data-author-id]')?.getAttribute?.("data-author-id")
+    || row.querySelector?.('[data-user-id]')?.getAttribute?.("data-user-id")
+    || row.querySelector?.('[data-author-id]')?.getAttribute?.("data-author-id")
     || null;
   const href = row.querySelector?.('a[href*="/users/"]')?.getAttribute?.("href")
     || row.querySelector?.('[href*="/users/"]')?.getAttribute?.("href")
     || "";
   const avatar = row.querySelector?.('img[src*="/avatars/"]')?.getAttribute?.("src") || "";
   const fromHref = href.match(/\/users\/(\d{5,})/)?.[1] || null;
-  const fromAvatar = avatar.match(/\/avatars\/(\d{5,})/)?.[1] || null;
-  const id = String(direct || fromHref || fromAvatar || "").trim();
+  const directId = /^\d{5,}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
+  // Avatar URLs can be stale, proxied, or belong to a decoration. They are
+  // presentation metadata only and must never establish sender identity.
+  const id = String(directId || fromHref || "").trim();
   if (!id || /^(null|undefined|unknown)$/i.test(id)) return null;
   return { authorId: id, avatarUrl: avatar };
 }

@@ -5,7 +5,8 @@ import {
   sanitizeAnalyticsRecord,
 } from "../privacy/data-policy.js";
 import { INITIAL_COLLECTION_STATES } from "../collection/collection-state.js";
-import { canonicalAuthorId, mergeAuthorRecords } from "../identity/stable-author.js";
+import { canonicalAuthorId, canonicalConversationId, mergeAuthorRecords } from "../identity/stable-author.js";
+import { UNRESOLVED_AUTHOR_ID } from "../identity/participant-resolver.js";
 
 const emptyState = () => ({ version: ANALYTICS_SCHEMA_VERSION, conversations: {} });
 
@@ -31,13 +32,17 @@ export class HistoricalStore {
     let needsWrite = false;
     for (const [id, raw] of Object.entries(value.conversations)) {
       if (!raw || typeof raw !== "object") continue;
+      const stableId = canonicalConversationId(raw.conversationId) || canonicalConversationId(id) || String(id).trim();
+      if (stableId !== String(id) || (raw.conversationId != null && String(raw.conversationId) !== stableId)) needsWrite = true;
       const people = {};
+      let duplicatePerson = false;
       for (const [personId, person] of Object.entries(raw.people || {})) {
         if (!person || typeof person !== "object") continue;
-        const canonicalId = canonicalAuthorId(person.authorId ?? personId);
-        if (!canonicalId) continue;
+        const stableAuthorId = canonicalAuthorId(person.authorId ?? personId);
+        const canonicalId = stableAuthorId || UNRESOLVED_AUTHOR_ID;
+        if (!stableAuthorId) needsWrite = true;
         const normalized = {
-          authorId: canonicalId, name: safeString(person.name, 100) || canonicalId,
+          authorId: canonicalId, name: stableAuthorId ? safeString(person.name, 100) || canonicalId : "Unresolved sender",
           username: safeString(person.username, 100), avatarUrl: safeAvatar(person.avatarUrl),
           sent: count(person.sent), received: count(person.received),
           unknown: person.sent == null && person.received == null && person.unknown == null ? count(person.total) : count(person.unknown),
@@ -46,11 +51,12 @@ export class HistoricalStore {
           hourly: countArray(person.hourly), hourlySent: countArray(person.hourlySent), hourlyReceived: countArray(person.hourlyReceived), hourlyUnknown: countArray(person.hourlyUnknown),
         };
         if (String(personId) !== canonicalId || people[canonicalId]) needsWrite = true;
+        if (people[canonicalId]) duplicatePerson = true;
         people[canonicalId] = mergeAuthorRecords(people[canonicalId], normalized);
       }
-      conversations[String(id)] = {
-        conversationId: String(id),
-        navigationPath: validConversationPath(raw.navigationPath, id),
+      const normalizedConversation = {
+        conversationId: stableId,
+        navigationPath: validConversationPath(raw.navigationPath, stableId),
         collection: sanitizeCollection(raw.collection),
         status: validStatus(raw.status) ? raw.status : "partial",
         totals: { sent: count(raw.totals?.sent), received: count(raw.totals?.received), unknown: count(raw.totals?.unknown) },
@@ -71,6 +77,13 @@ export class HistoricalStore {
         updatedAt: count(raw.updatedAt),
         ...(raw.error ? { error: safeString(raw.error, 240) } : {}),
       };
+      if (duplicatePerson) reconcileConversationTotals(normalizedConversation);
+      if (conversations[stableId]) {
+        needsWrite = true;
+        conversations[stableId] = mergeConversationRecords(conversations[stableId], normalizedConversation, this.dedupeLimit);
+      } else {
+        conversations[stableId] = normalizedConversation;
+      }
     }
     const reconciled = { version: ANALYTICS_SCHEMA_VERSION, conversations };
     if (needsWrite) {
@@ -81,12 +94,12 @@ export class HistoricalStore {
 
   getConversation(conversationId) {
     const snapshot = this.snapshot();
-    return structuredClone(snapshot.conversations[String(conversationId)] || null);
+    return structuredClone(snapshot.conversations[storageConversationId(conversationId)] || null);
   }
 
   markStatus(conversationId, status, details = {}) {
     const state = this.snapshot();
-    const id = String(conversationId);
+    const id = storageConversationId(conversationId);
     const entry = state.conversations[id] || this.newConversation(id);
     entry.status = status;
     entry.updatedAt = this.now();
@@ -102,7 +115,7 @@ export class HistoricalStore {
   applyBatch(conversationId, records, { status = "partial", complete = false } = {}) {
     if (!Array.isArray(records)) throw new TypeError("records must be an array");
     const state = this.snapshot();
-    const id = String(conversationId);
+    const id = storageConversationId(conversationId);
     const entry = state.conversations[id] || this.newConversation(id);
     const seen = new Set(entry.seenMessageKeys);
     const accepted = [];
@@ -141,13 +154,13 @@ export class HistoricalStore {
 
   clearConversation(conversationId) {
     const state = this.snapshot();
-    delete state.conversations[String(conversationId)];
+    delete state.conversations[storageConversationId(conversationId)];
     this.writeState(state);
   }
 
   markCollection(conversationId, changes = {}) {
     const state = this.snapshot();
-    const id = String(conversationId);
+    const id = storageConversationId(conversationId);
     const entry = state.conversations[id] || this.newConversation(id);
     entry.collection = sanitizeCollection({ ...entry.collection, ...changes });
     entry.updatedAt = this.now();
@@ -158,7 +171,7 @@ export class HistoricalStore {
 
   setAuthorExcluded(conversationId, authorId, excluded) {
     const state = this.snapshot();
-    const entry = state.conversations[String(conversationId)];
+    const entry = state.conversations[storageConversationId(conversationId)];
     if (!entry) return;
     const id = canonicalAuthorId(authorId);
     if (!id) return;
@@ -241,12 +254,85 @@ export class HistoricalStore {
 const count = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 const finiteOrNull = value => Number.isFinite(Number(value)) && value != null ? Number(value) : null;
 const safeString = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
+const storageConversationId = value => canonicalConversationId(value) || String(value).trim();
 const safeAvatar = value => typeof value === "string" && /^https:\/\/[^\s]{1,500}$/.test(value) ? value : "";
 const validConversationPath = (path, conversationId) => {
   if (typeof path !== "string") return null;
   const match = path.match(/^\/channels\/(?:@me|\d+)\/(\d+)\/?$/);
   return match && match[1] === String(conversationId) ? path.replace(/\/$/, "") : null;
 };
+
+function mergeConversationRecords(current, incoming, dedupeLimit) {
+  const people = { ...current.people };
+  for (const [authorId, person] of Object.entries(incoming.people)) {
+    people[authorId] = mergeAuthorRecords(people[authorId], person);
+  }
+  const sumPeople = key => Object.values(people).reduce((total, person) => total + count(person[key]), 0);
+  const mergeMap = (a, b) => {
+    const result = { ...a };
+    for (const [key, value] of Object.entries(b || {})) result[key] = Math.max(count(result[key]), count(value));
+    return result;
+  };
+  const mergeArray = (a, b) => Array.from({ length: 24 }, (_, index) => Math.max(count(a?.[index]), count(b?.[index])));
+  const latest = (a, b) => Math.max(count(a), count(b));
+  const seenMessageKeys = [...new Set([...current.seenMessageKeys, ...incoming.seenMessageKeys])];
+  const selected = incoming.updatedAt >= current.updatedAt ? incoming : current;
+  const totals = {
+    sent: sumPeople("sent"), received: sumPeople("received"), unknown: sumPeople("unknown"),
+  };
+  // Preserve old aggregate-only records when neither copy has author detail.
+  if (!Object.keys(people).length) {
+    totals.sent = Math.max(current.totals.sent, incoming.totals.sent);
+    totals.received = Math.max(current.totals.received, incoming.totals.received);
+    totals.unknown = Math.max(current.totals.unknown, incoming.totals.unknown);
+  }
+  return {
+    ...selected,
+    conversationId: current.conversationId,
+    navigationPath: current.navigationPath || incoming.navigationPath,
+    collection: incoming.collection.lastCollectionAt >= current.collection.lastCollectionAt ? incoming.collection : current.collection,
+    status: incoming.updatedAt >= current.updatedAt ? incoming.status : current.status,
+    totals,
+    people,
+    daily: mergeMap(current.daily, incoming.daily),
+    dailySent: mergeMap(current.dailySent, incoming.dailySent),
+    dailyReceived: mergeMap(current.dailyReceived, incoming.dailyReceived),
+    dailyUnknown: mergeMap(current.dailyUnknown, incoming.dailyUnknown),
+    hourly: mergeArray(current.hourly, incoming.hourly),
+    hourlySent: mergeArray(current.hourlySent, incoming.hourlySent),
+    hourlyReceived: mergeArray(current.hourlyReceived, incoming.hourlyReceived),
+    hourlyUnknown: mergeArray(current.hourlyUnknown, incoming.hourlyUnknown),
+    excludedAuthors: [...new Set([...current.excludedAuthors, ...incoming.excludedAuthors])],
+    seenMessageKeys: seenMessageKeys.length > dedupeLimit ? seenMessageKeys.slice(Math.max(0, seenMessageKeys.length - dedupeLimit)) : seenMessageKeys,
+    coverage: {
+      ...current.coverage, ...incoming.coverage,
+      recordsProcessed: latest(current.coverage.recordsProcessed, incoming.coverage.recordsProcessed),
+      encountered: latest(current.coverage.encountered, incoming.coverage.encountered),
+      duplicatesIgnored: latest(current.coverage.duplicatesIgnored, incoming.coverage.duplicatesIgnored),
+      batches: latest(current.coverage.batches, incoming.coverage.batches),
+      oldestTimestamp: minDate(current.coverage.oldestTimestamp, [incoming.coverage.oldestTimestamp]),
+      newestTimestamp: maxDate(current.coverage.newestTimestamp, [incoming.coverage.newestTimestamp]),
+    },
+    updatedAt: latest(current.updatedAt, incoming.updatedAt),
+  };
+}
+
+function reconcileConversationTotals(conversation) {
+  const people = Object.values(conversation.people);
+  conversation.totals = {
+    sent: people.reduce((sum, person) => sum + count(person.sent), 0),
+    received: people.reduce((sum, person) => sum + count(person.received), 0),
+    unknown: people.reduce((sum, person) => sum + count(person.unknown), 0),
+  };
+  const sumMaps = field => {
+    const result = {};
+    for (const person of people) for (const [key, value] of Object.entries(person[field] || {})) result[key] = (result[key] || 0) + count(value);
+    return result;
+  };
+  const sumArrays = field => Array.from({ length: 24 }, (_, hour) => people.reduce((sum, person) => sum + count(person[field]?.[hour]), 0));
+  for (const field of ["daily", "dailySent", "dailyReceived", "dailyUnknown"]) conversation[field] = sumMaps(field);
+  for (const field of ["hourly", "hourlySent", "hourlyReceived", "hourlyUnknown"]) conversation[field] = sumArrays(field);
+}
 const sanitizeCollection = raw => {
   const state = INITIAL_COLLECTION_STATES.includes(raw?.state) ? raw.state : "never_collected";
   const operation = ["idle", "collecting", "completed", "incomplete", "interrupted", "failed"].includes(raw?.lastOperationStatus)

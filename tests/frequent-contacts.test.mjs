@@ -100,6 +100,16 @@ test("Frequent reconciliation keeps stable identities and never merges identical
   assert.equal(rows.some(row => row.authorId === "unknown"), false);
 });
 
+test("Frequent excludes unresolved identities and never renders unresolved as a person", () => {
+  const snapshot = { conversations: { "100": { conversationId: "100", navigationPath: "/channels/@me/100", people: {
+    "__unresolved_author__": { authorId: "__unresolved_author__", name: "Unknown", total: 4 },
+    u1: { authorId: "u1", name: "Pat", total: 2 },
+  } } } };
+  const rows = buildFrequentContacts(snapshot);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].authorId, "u1");
+});
+
 test("missing or stale conversation route produces an explicit navigation fallback", () => {
   const snapshot = { conversations: { "42": { conversationId: "42", navigationPath: null, people: {
     "person-id": { name: "Pat", total: 2 },
@@ -107,4 +117,15 @@ test("missing or stale conversation route produces an explicit navigation fallba
   const [contact] = buildFrequentContacts(snapshot);
   assert.equal(contact.href, null);
   assert.equal(contact.authorId, "person-id");
+});
+
+test("Frequent excludes the current user's identity while retaining other participants", () => {
+  const snapshot = { conversations: { "100": { conversationId: "100", navigationPath: "/channels/@me/100", people: {
+    "self-id": { authorId: "self-id", name: "Me", total: 8, sent: 8, received: 0, unknown: 0 },
+    "other-id": { authorId: "other-id", name: "Pat", total: 4, sent: 0, received: 4, unknown: 0 },
+  } } } };
+  const rows = buildFrequentContacts(snapshot, { currentUserId: "self-id" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].authorId, "other-id");
+  assert.equal(rows.some(row => row.authorId === "self-id"), false);
 });

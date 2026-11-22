@@ -1,685 +1,639 @@
-# Barkly Access — Complete UI Reconstruction, Frequent Directory, Analytics Dashboard & PAW-HC Accessibility
+# Barkly Access — End-to-End Data Pipeline, Participant Identification, Collection, Deduplication and UI Integration Repair
 
-## Project Context
+## Critical objective
 
-Barkly Access is a modular BetterDiscord accessibility project built around PAW-HC (People Are Worth Designing For).
+Barkly Access is currently failing to connect its modules properly.
 
-The philosophy is:
+The previous repair attempts did not resolve the problems. The UI remains unreliable, participant detection is incomplete, duplicate entries still occur, message collection does not correctly resolve both sides of conversations, and the modules are not consistently connected to the same data source.
 
-**People Are Worth Designing For. Technology should adapt to people, not force people to adapt to technology.**
+This task is an end-to-end engineering repair.
 
-The current display/UI is not functioning correctly and needs a comprehensive investigation and reconstruction. This is not a request for superficial CSS fixes. Audit the existing implementation and rebuild the display layer into a cohesive, maintainable, accessible and functional system.
+Do not perform another isolated UI patch.
 
-The project already has existing functionality, architecture, collection logic, persistence, analytics and modules. Inspect the actual codebase before making assumptions.
+Do not build another disconnected implementation.
 
-Do not blindly rewrite functioning infrastructure just because the UI needs rebuilding.
+Inspect the existing repository, trace the complete data flow, identify the root causes, and implement a unified architecture connecting the collector, participant resolver, storage, deduplication, Frequent, Stats, collection popup and UI.
 
----
-
-# PHASE 1 — AUDIT THE EXISTING PROJECT
-
-Before modifying code:
-
-1. Inspect the entire project structure.
-2. Identify the current plugin entry point and lifecycle.
-3. Identify how the UI is mounted, rendered and removed.
-4. Inspect the existing CSS and styling architecture.
-5. Inspect existing UI components, navigation, tabs, panels and modals.
-6. Inspect the collection engine and how collected data is exposed to the UI.
-7. Inspect the storage and persistence system.
-8. Inspect message normalization, sender identification and deduplication.
-9. Inspect the existing Frequent module.
-10. Inspect the existing Stats module and analytics implementation.
-11. Inspect the collection progress popup.
-12. Inspect the user bar modification system.
-13. Inspect event listeners, observers, state management and cleanup.
-14. Identify rendering failures, conflicting CSS, invalid selectors, lifecycle issues, stale references and broken event handling.
-15. Identify existing tests and testing infrastructure.
-
-Trace the actual causes of the current display failures.
-
-Do not guess the cause.
-
-Document the architectural findings internally before implementing the rebuild.
+The project must use one consistent source of truth.
 
 ---
 
-# PHASE 2 — REBUILD THE DISPLAY ARCHITECTURE
+# PHASE 1 — INVESTIGATE THE ENTIRE REPOSITORY
 
-Reconstruct the Barkly Access presentation layer into a cohesive modular UI system.
+Inspect the complete project before changing code.
 
-## Architectural requirements
+Identify:
 
-- Maintain clearly separated modules.
-- Create reusable UI components.
-- Establish a consistent styling system.
-- Establish predictable UI state management.
-- Ensure components render reliably within Discord.
-- Ensure UI components are properly mounted and unmounted.
-- Clean up event listeners, observers and injected elements.
-- Prevent duplicate mounting.
-- Prevent UI state from becoming inconsistent.
-- Avoid unnecessarily fragile Discord DOM assumptions.
-- Avoid interfering with Discord's native interface.
-- Handle Discord UI changes and missing DOM elements gracefully.
-- Ensure components can recover from rendering errors where possible.
-- Avoid maintaining two competing UI systems.
-- Remove obsolete UI code when it is safely replaced.
-- Preserve functional infrastructure wherever possible.
+- Main plugin entry point.
+- UI rendering and lifecycle.
+- Conversation detection.
+- Message extraction.
+- Sender identification.
+- Participant detection.
+- Message normalization.
+- User normalization.
+- Collection orchestration.
+- Backfill implementation.
+- Incremental collection.
+- Storage architecture.
+- Database schemas.
+- Deduplication.
+- Frequent implementation.
+- Stats implementation.
+- UI state management.
+- Collection popup.
+- Module interfaces.
+- Event handling.
+- Existing tests.
 
-Use the existing project conventions and dependencies unless there is a justified architectural reason to change them.
+Trace the actual execution flow.
 
-## UI design
+Determine where the data stops flowing between modules and why.
 
-Create a consistent visual system for Barkly Access.
+Investigate whether components are:
 
-Design direction:
+- Using separate state sources.
+- Using incompatible data structures.
+- Using stale data.
+- Reading different storage locations.
+- Losing sender IDs during normalization.
+- Failing to resolve participants.
+- Failing to update the UI after collection.
+- Creating duplicate records.
+- Rendering incomplete information.
 
-- Dark interface.
-- Pink accents.
-- Clean, modern visual presentation.
-- Spacious layouts.
-- Clear visual hierarchy.
-- Responsive components.
-- Accessible typography.
-- Consistent spacing.
-- Consistent controls.
-- Customizable visual density where feasible.
-
-The interface must not be cramped or difficult to navigate.
-
----
-
-# PHASE 3 — MAIN BARKLY ACCESS INTERFACE
-
-Rebuild the primary Barkly Access interface.
-
-Create a cohesive navigation and layout system for the available modules.
-
-The interface should provide clear access to:
-
-- Accessibility settings.
-- User Bar customization.
-- Frequent conversations.
-- Stats and analytics.
-- Shared settings and configuration.
-
-Each module must be functional, properly integrated and rendered through the shared UI architecture.
-
-Do not implement placeholder controls that appear functional but do nothing.
-
-## Navigation requirements
-
-- Clear navigation hierarchy.
-- Consistent navigation behavior.
-- Keyboard-accessible navigation.
-- Visible focus indicators.
-- Predictable transitions.
-- Properly labeled controls.
-- Responsive behavior.
-- Clear indication of the active module.
-- Accessible error, empty and loading states.
+Do not assume the problems are independent.
 
 ---
 
-# PHASE 4 — USER BAR ACCESSIBILITY
+# PHASE 2 — ESTABLISH A SHARED DATA ARCHITECTURE
 
-Rebuild and improve the user bar accessibility module.
+Reconstruct the data integration architecture as necessary.
 
-Inspect how the existing user bar is modified and how those modifications interact with Discord's UI.
+All modules must use a common collection and data layer.
 
-Implement configurable accessibility improvements where technically feasible:
+Create or repair clearly defined interfaces for:
 
-- Adjustable control sizes.
-- Improved interaction targets.
-- More accessible spacing.
-- Clearer labels.
-- Keyboard navigation.
-- Focus visibility.
-- Reduced visual clutter.
-- Configurable positioning where supported.
-- Accessible control interactions.
-- Improved screen reader support.
-- Responsive behavior.
+- Conversation records.
+- Message records.
+- Participant records.
+- Collection states.
+- Collection results.
+- Analytics data.
+- Storage operations.
 
-The user bar modifications must integrate safely with Discord and must not unnecessarily disrupt the native user bar.
+Establish consistent data contracts across the project.
 
-Do not rely on brittle DOM manipulation without lifecycle handling.
+The collector must not create data that Frequent or Stats cannot consume.
+
+Frequent and Stats must not independently scrape or collect messages.
+
+The UI must not maintain an unrelated copy of the underlying dataset.
+
+All modules must subscribe to or retrieve data from the same authoritative data layer.
+
+Use the existing project architecture where possible, repairing it rather than creating unnecessary parallel systems.
+
+## Shared data flow
+
+Implement and verify the following pipeline:
+
+Discord conversation
+→ Conversation identification
+→ Message extraction
+→ Message normalization
+→ Sender identity extraction
+→ Participant resolution
+→ Message deduplication
+→ Storage
+→ Participant aggregation
+→ Frequent directory
+→ Stats analytics
+→ UI rendering
+
+Every stage must have a defined interface and validation.
+
+Do not allow silent data loss between stages.
 
 ---
 
-# PHASE 5 — FREQUENT CONVERSATIONS DIRECTORY
+# PHASE 3 — RELIABLY IDENTIFY BOTH SIDES OF A CONVERSATION
 
-Completely rebuild and correct the Frequent module.
+The message collector must correctly identify message authors and resolve the participants in a conversation.
 
-Frequent must function as a people and conversation directory using conversation metadata and aggregated collection information.
+For a direct conversation, the system must correctly identify:
 
-**Frequent is NOT a message viewer.**
+1. The current Discord user.
+2. The other participant.
 
-## Information permitted in Frequent
+For supported group conversations, it must identify each distinct participant where reliable identity data is available.
 
-Frequent may display:
+## Sender identification
 
-- Display name or nickname, when available.
-- Avatar, when available.
-- Conversation identifier internally when necessary.
-- Total collected message count for that conversation.
-- Last interaction date, when reliably available.
-- Other necessary non-content conversation metadata.
+Inspect the actual message extraction implementation.
 
-## Information prohibited in Frequent
+Determine whether author identifiers are being extracted, lost, incorrectly normalized or incorrectly assigned.
 
-Frequent must NEVER display:
+Using supported, visible UI information and permitted integration mechanisms, extract reliable sender identifiers from collected messages.
 
-- Actual message text.
+Where accessible and reliable, identify:
+
+- Message identifier.
+- Conversation identifier.
+- Sender identifier.
+- Sender display name.
+- Timestamp.
+- Other minimal metadata needed for aggregation.
+
+Use stable sender identifiers as the source of truth.
+
+Do not use display names, message text, avatars or visual positioning as identity keys.
+
+Do not infer message ownership from message contents.
+
+Do not invent participant IDs.
+
+Do not assign messages to a participant when sender identity cannot be reliably resolved.
+
+Represent unresolved identities explicitly.
+
+## Participant resolution
+
+Implement a participant resolver that uses reliable identity metadata to associate messages with the correct people.
+
+For direct conversations:
+
+- Resolve the current user's identity.
+- Resolve the other participant's identity.
+- Associate each collected message with its actual sender.
+- Verify that the two identities are distinguishable.
+- Ensure the current user's messages and the other participant's messages are not mixed.
+
+For group conversations:
+
+- Resolve distinct participants where supported.
+- Associate messages with their corresponding sender.
+- Avoid incorrectly merging participants.
+
+If identity information is incomplete, report the limitation rather than fabricating a resolution.
+
+## Privacy and collection boundaries
+
+Use supported UI-based extraction or authorized integration mechanisms.
+
+Do not use credential extraction, token harvesting, self-bot mechanisms, unauthorized private API access or bypasses of Discord's access controls.
+
+The collection process must not attempt to access conversations the user is not authorized to access.
+
+---
+
+# PHASE 4 — REPAIR MESSAGE COLLECTION
+
+Inspect the entire collection process.
+
+The collection engine must:
+
+- Identify the active conversation reliably.
+- Collect available messages through supported mechanisms.
+- Extract sender identifiers accurately.
+- Extract message identifiers accurately where available.
+- Preserve conversation identifiers.
+- Normalize records consistently.
+- Avoid losing data during processing.
+- Handle overlapping collection batches.
+- Handle missing metadata.
+- Support incremental collection where feasible.
+- Support the existing persisted collection state.
+- Handle failures and interruptions.
+- Report collection coverage honestly.
+
+If historical backfill is implemented through progressive UI scrolling, ensure it properly detects newly rendered batches, handles overlapping results and restores the user's original scroll position when appropriate.
+
+Do not claim complete history has been collected when the available interface cannot verify it.
+
+Do not replace the existing collection architecture unnecessarily.
+
+Repair the existing collector where possible.
+
+---
+
+# PHASE 5 — IMPLEMENT ROBUST DEDUPLICATION
+
+Deduplication must be enforced across the entire pipeline.
+
+## Message deduplication
+
+Use reliable message identifiers and conversation scope where available.
+
+Prevent:
+
+- Duplicate messages within one batch.
+- Duplicate messages across overlapping batches.
+- Duplicate messages across sessions.
+- Duplicate messages during retries.
+- Duplicate message aggregation.
+
+Do not deduplicate messages solely by their text.
+
+Identical text can represent distinct messages.
+
+## Participant deduplication
+
+Use stable participant identifiers.
+
+Prevent:
+
+- Duplicate participants within one batch.
+- Duplicate participants across batches.
+- Duplicate participants across collection sessions.
+- Duplicate participant storage records.
+- Duplicate Frequent entries.
+
+Do not deduplicate users by display name.
+
+Two different users may have the same display name.
+
+A user can change their display name or avatar without becoming a different user.
+
+## Conversation deduplication
+
+Use stable conversation identifiers.
+
+Prevent duplicate conversation records and incorrect associations.
+
+## Storage-level enforcement
+
+Implement appropriate:
+
+- Unique constraints.
+- Upsert operations.
+- Idempotent writes.
+- Reconciliation of existing records.
+- Safe duplicate cleanup.
+- Integrity checks.
+
+Deduplication must not exist only in the presentation layer.
+
+Existing duplicate data should be reconciled safely where possible.
+
+Preserve accurate message counts and relationships when merging duplicate records.
+
+Do not destroy data during cleanup.
+
+---
+
+# PHASE 6 — CONNECT FREQUENT TO THE SHARED DATA LAYER
+
+Frequent must automatically populate from the shared participant and conversation data.
+
+It must not have a separate collector.
+
+It must not have a separate dataset.
+
+It must not have its own independent identity-resolution logic.
+
+## Frequent display
+
+Display:
+
+- Unique participants or conversation entries, according to the established identity scope.
+- Name where available.
+- Avatar where available.
+- Aggregate message counts.
+- Last interaction date where available.
+- Other necessary non-content metadata.
+
+## Frequent restrictions
+
+Frequent must never display:
+
+- Actual message contents.
 - Message previews.
 - Message snippets.
-- Quotes from conversations.
-- Attachments or message content.
-- AI-generated message summaries.
-- Message-content-based hover previews.
-- Expandable message-content sections.
-
-The Frequent module must not render actual conversation content in any form.
+- Quotes.
+- Attachments.
+- AI-generated conversation summaries.
 
 ## Frequent functionality
 
-- Automatically populate the directory using the existing shared collection and conversation metadata.
-- Use the existing collection and storage systems.
-- Do not create another collector.
-- Do not create another database.
-- Do not duplicate the underlying message data.
-- Support searching.
-- Support sorting.
-- Support organization of conversation entries.
-- Display aggregated message counts.
-- Display available names and avatars.
-- Handle missing metadata gracefully.
-- Provide a clear empty state.
-- Support proper loading and error states.
-- Allow users to select a conversation entry.
-
-## Conversation navigation
-
-When a user clicks a conversation entry:
-
-- Navigate to the corresponding Discord conversation using supported UI mechanisms.
-- Use reliable conversation identifiers.
-- Do not merely open a static analytics entry.
-- Handle unavailable conversations gracefully.
-- Do not claim navigation succeeded if it did not.
-
-## Privacy and separation
-
-Frequent must remain a metadata-based directory.
-
-Use the shared data layer only to retrieve the information necessary to identify, organize and count conversations.
-
-Never render message content within Frequent, including through secondary components, tooltips, previews or expandable sections.
-
-Add tests that verify the separation between conversation metadata and message contents.
-
----
-
-# PHASE 6 — FULL STATS ANALYTICS DASHBOARD
-
-The Stats module should no longer be restricted to a cramped plugin panel.
-
-Create a dedicated, spacious analytics dashboard.
-
-The Stats module should provide a clear entry point, such as:
-
-**Open Analytics Dashboard**
-
-The dashboard must be a properly integrated interface with a layout suitable for substantial data analysis.
-
-It must use the actual collected data from the existing shared collection system.
-
-Do not fabricate, simulate or substitute statistics.
-
-## Dashboard overview
-
-Display relevant aggregate statistics where supported by the data:
-
-- Total collected messages.
-- Messages sent by the current user.
-- Messages sent by other participants.
-- Total conversations represented.
-- Collection coverage.
-- Activity over time.
-- Activity by day.
-- Activity by hour.
-- Conversation-level statistics.
-- Participant-level statistics.
-- Date-based filtering.
-- Search and organization tools.
-
-Ensure all statistics are calculated accurately from the existing collected records.
-
-## A. MY MESSAGES — CURRENT USER ANALYTICS
-
-Create a dedicated section for messages sent by the current Discord user.
-
-Clearly label this section:
-
-**My Messages**
-
-Display where supported:
-
-- Total messages sent by the current user.
-- Message activity over time.
-- Daily activity.
-- Hourly activity.
-- Activity by day of week.
-- Message frequency.
-- Activity trends.
-- Date-range filtering.
-- Other meaningful aggregate statistics derived from the current user's messages.
-
-All data must be accurately attributed to the current user using reliable sender identification.
-
-Do not infer message ownership from message content.
-
-## B. OTHER PARTICIPANT — MESSAGE ANALYTICS
-
-Create a separate analytics section for messages sent by the other participant or participants.
-
-Clearly label the section:
-
-**Other Participant's Messages**
-
-Display where supported:
-
-- Total messages sent by the other participant.
-- Message activity over time.
-- Daily activity.
-- Hourly activity.
-- Activity by day of week.
-- Message frequency.
-- Activity trends.
-- Date-range filtering.
-- Other meaningful aggregate statistics derived from their messages.
-
-For group conversations, support analytics for individual participants where sender identity can reliably be established.
-
-The current user's messages must not be incorrectly included in the other participant's statistics.
-
-## C. COMPARISON VIEW
-
-Create an optional comparison section.
-
-Clearly label it:
-
-**Compare Activity**
-
-Allow the user to compare their own messaging activity with the other participant's activity.
-
-Examples:
-
-- Message volume over time.
-- Daily messaging activity.
-- Hourly activity patterns.
-- Activity by day of week.
-- Activity trends over selected date ranges.
-- Aggregate message volume comparison.
-
-The comparison view must not replace the separate My Messages and Other Participant's Messages sections.
-
-The individual sections must remain accessible independently.
-
-## D. SENDER IDENTIFICATION
-
-Sender attribution is critical.
-
-- Reliably identify the current Discord user's sender ID.
-- Reliably identify other participants.
-- Use collected sender metadata.
-- Do not infer ownership from message text.
-- Do not infer sender identity from visual appearance alone.
-- Handle unknown sender IDs safely.
-- Do not silently misclassify unknown messages.
-- Make attribution limitations visible when necessary.
-
-## E. ANALYTICS FILTERING
-
-Provide useful filtering and organization tools:
-
-- Date range.
-- Conversation.
-- Participant where applicable.
-- Activity categories where applicable.
-- Search where appropriate.
-
-Ensure filters are accessible and do not make the dashboard difficult to use.
-
-## F. ANALYTICS VISUALIZATION
-
-Use meaningful visualizations where appropriate.
-
-Examples:
-
-- Activity graphs.
-- Timeline charts.
-- Daily activity charts.
-- Hourly distribution.
-- Comparison charts.
-- Summary cards.
-- Tables.
-
-Every graph must have an accessible alternative.
-
-Provide:
-
-- Text-based descriptions.
-- Accessible data tables where appropriate.
-- Screen reader support.
-- Meaningful chart labels.
-- Accessible legends.
-- Keyboard-accessible interactions where applicable.
-
-Do not rely exclusively on visual charts.
-
-## G. ANALYTICS PRIVACY
-
-The dashboard should primarily provide aggregate analytics.
-
-Do not automatically expose individual message contents in the analytics dashboard.
-
-Message content must not be displayed simply because the user opened Stats.
-
-If the project contains or later introduces an explicitly separate content-viewing feature, it must be opt-in, clearly separated from aggregate analytics and implemented with appropriate privacy controls.
-
----
-
-# PHASE 7 — COLLECTION STATUS POPUP
-
-Review and integrate the existing collection progress popup.
-
-When a conversation is being collected or backfilled, display a temporary status card.
-
-The popup should:
-
-- Identify the conversation being processed.
-- Display collection status.
-- Display progress where progress can be accurately measured.
-- Display collected message counts.
-- Display relevant errors.
-- Display collection status transitions.
-- Provide cancellation where supported.
-- Avoid blocking the Discord interface.
-- Automatically disappear after completion with an appropriate brief completion indication.
-- Handle interrupted collection.
-- Handle failed collection.
-- Handle retries.
-
-Do not fabricate progress percentages.
-
-Use meaningful status states.
-
-Examples:
-
-- Waiting.
-- Collecting.
-- Processing.
-- Completed.
-- Interrupted.
-- Failed.
-- Cancelled.
-
-## Initial backfill behavior
-
-The initial historical backfill must occur only once per conversation, according to the persisted collection state.
-
-- Persist collection state using stable conversation identifiers.
-- Distinguish never-collected conversations from collected conversations.
-- Distinguish completed from incomplete collections.
-- Avoid repeatedly restarting full historical collection on every visit.
-- Reuse previously collected data.
-- Perform lightweight incremental collection when supported.
-- Resume or retry incomplete collection appropriately.
-- Do not falsely report complete historical coverage.
-- Preserve deduplication and persistence integrity.
-
-The popup must accurately reflect the collection engine's actual state.
-
----
-
-# PHASE 8 — PAW-HC ACCESSIBILITY FRAMEWORK
-
-Accessibility must be built into the shared UI architecture.
-
-Do not treat accessibility as a superficial collection of toggles or an afterthought.
-
-Design the interface to accommodate different interaction, sensory, cognitive, motor and visual needs.
-
-## Cognitive accessibility
-
-Where technically feasible:
-
-- Reduce unnecessary clutter.
-- Simplify navigation.
-- Reduce memory burden.
-- Maintain predictable layouts.
-- Provide consistent controls.
-- Make actions understandable.
-- Provide clear feedback.
-- Reduce unnecessary steps.
-- Support simpler UI configurations.
-- Avoid overwhelming information presentation.
-- Make empty and error states understandable.
-- Allow configurable visual density.
-
-## Motor accessibility
-
-Where technically feasible:
-
-- Increase interaction target sizes.
-- Reduce precision requirements.
-- Support keyboard navigation.
-- Maintain clear focus.
-- Avoid unnecessary interaction complexity.
-- Support accessible control spacing.
-- Avoid interactions that require excessive repetitive movement.
-
-## Visual accessibility
-
-Implement:
-
-- Accessible contrast.
-- Scalable text.
-- Clear typography.
-- Visible focus indicators.
-- Meaningful labels.
-- Accessible icons.
-- Color-independent information.
-- Adjustable visual density where feasible.
-
-## Sensory accessibility
-
-Where technically feasible:
-
-- Reduced motion.
-- Adjustable visual stimulation.
-- Reduced unnecessary animations.
-- Configurable interface density.
-- Clear visual hierarchy.
-- Less distracting presentation.
-
-## Screen reader accessibility
-
-Implement:
-
-- Semantic UI structures.
-- Accessible labels.
-- Appropriate roles.
-- Meaningful status announcements.
-- Accessible navigation.
-- Logical reading order.
-- Properly labeled controls.
-- Accessible tables and graph alternatives.
-
-## Keyboard accessibility
-
-Ensure:
-
-- Keyboard navigation throughout the interface.
-- Logical focus order.
-- Visible focus.
-- Accessible interactive controls.
-- Proper focus handling when opening and closing panels.
-- Focus restoration where appropriate.
-- No keyboard traps.
-
-Accessibility settings themselves must be accessible.
-
----
-
-# PHASE 9 — PRIVACY BOUNDARIES
-
-Barkly Access is designed around privacy and user autonomy.
-
-The creator's own analytics should be restricted to an aggregate count of how many people are using Barkly Access.
-
-Do not implement creator-side collection of:
-
-- Discord messages.
-- Conversation contents.
-- User conversation histories.
-- Individual behavioral profiles.
-- Disability or diagnosis information.
-- Individual usage activity.
-- User-specific analytics.
-- Personal identifiers.
-- Fingerprinting.
-- Unnecessary telemetry.
-
-Usability testing must be separately designed, voluntary and privacy-preserving.
-
-Usability measurements intended to evaluate the interface should not become creator-side user surveillance.
-
----
-
-# PHASE 10 — TESTING AND VALIDATION
-
-Conduct a comprehensive testing pass.
-
-## UI rendering
-
-Test:
-
-- Main interface rendering.
-- Navigation.
-- Module mounting.
-- Module unmounting.
-- Repeated opening and closing.
-- Responsive layouts.
-- Styling conflicts.
-- Component lifecycle.
-- Error recovery.
-
-## Frequent
-
-Test:
-
-- Metadata-only display.
-- No message-content leakage.
-- Searching.
+- Search.
 - Sorting.
+- Accurate aggregated message counts.
+- Correct participant association.
 - Conversation navigation.
+- Accessible rendering.
 - Empty states.
-- Missing metadata.
-- Message count accuracy.
+- Error states.
+- Loading states.
 
-## Stats
+Clicking an entry must navigate to the corresponding Discord conversation through supported UI mechanisms.
 
-Test:
+Verify that Frequent updates when collection data changes.
 
-- Current-user sender identification.
-- Other participant sender identification.
-- Sender separation.
-- Group conversation attribution where supported.
-- Message totals.
-- Activity aggregation.
+---
+
+# PHASE 7 — CONNECT STATS TO THE SAME DATA SOURCE
+
+Stats must use the same shared dataset as collection and Frequent.
+
+Do not create a separate message collection pipeline.
+
+Do not create a separate participant-resolution system.
+
+Do not calculate statistics from an incomplete or disconnected UI state.
+
+## My Messages
+
+Create a distinct section for messages authored by the current user.
+
+Display supported aggregate analytics:
+
+- Total messages sent.
+- Activity over time.
+- Daily activity.
+- Hourly activity.
+- Activity by day of week.
+- Activity trends.
 - Date filtering.
-- Comparison calculations.
-- Missing or unknown sender handling.
-- Collection coverage reporting.
-- Accessible graph alternatives.
 
-## Collection integration
+## Other Participant's Messages
 
-Test:
+Create a distinct section for messages authored by the other participant.
 
-- Initial collection.
-- Existing collection state.
-- Incremental collection.
-- Deduplication.
-- Persistence.
+Display supported aggregate analytics:
+
+- Total messages sent.
+- Activity over time.
+- Daily activity.
+- Hourly activity.
+- Activity by day of week.
+- Activity trends.
+- Date filtering.
+
+## Compare Activity
+
+Provide a separate optional comparison view for the current user and the other participant.
+
+Support:
+
+- Message activity comparisons.
+- Activity over time.
+- Daily activity.
+- Hourly activity.
+- Activity trends.
+
+For group conversations, support participant-specific analytics where reliable sender identification is available.
+
+## Data integrity
+
+- Do not misattribute messages.
+- Do not silently include unidentified senders in either person's statistics.
+- Explicitly account for unresolved messages where appropriate.
+- Avoid double-counting.
+- Use actual collected records.
+- Report collection coverage honestly.
+
+Provide accessible graph alternatives and tables.
+
+Do not automatically expose actual message contents in Stats.
+
+---
+
+# PHASE 8 — CONNECT THE COLLECTION POPUP AND COLLECTION STATE
+
+The collection popup must be connected to the actual collection engine.
+
+It must not operate on simulated progress or disconnected state.
+
+Display actual information where available:
+
+- Conversation being collected.
+- Current status.
+- Collected message count.
+- Collection progress where measurable.
+- Errors.
+- Completion.
+- Cancellation.
 - Interrupted collection.
-- Retry.
-- Popup state.
-- UI integration with collected data.
 
-## Accessibility
+Persist initial backfill state per conversation.
 
-Test:
+Do not repeatedly perform the initial backfill when it has already been completed.
+
+Support incremental collection where feasible.
+
+Handle incomplete and interrupted collection states.
+
+Ensure the popup updates as the collector progresses and disappears appropriately after completion.
+
+---
+
+# PHASE 9 — REPAIR THE UI RENDERING
+
+The current UI still fails to display correctly.
+
+Investigate and fix the actual rendering defects.
+
+Inspect:
+
+- Mounting.
+- Rendering lifecycle.
+- CSS conflicts.
+- Layout.
+- Containers.
+- Selectors.
+- Component state.
+- Event handling.
+- DOM references.
+- Discord UI compatibility.
+- Data binding.
+- Navigation.
+- Visibility.
+- Overflow.
+- Sizing.
+- Cleanup.
+
+The UI must be connected to the actual shared data layer.
+
+It must not render disconnected mock data or stale datasets.
+
+Verify:
+
+- Main UI.
+- Frequent.
+- Stats.
+- Analytics dashboard.
+- Collection popup.
+- User bar accessibility.
+- Navigation.
+- Settings.
+
+A successful compilation does not prove the display works.
+
+If runtime validation is available, perform it.
+
+If runtime validation is unavailable, state that clearly.
+
+---
+
+# PHASE 10 — PAW-HC ACCESSIBILITY
+
+Build accessibility into the shared architecture.
+
+Implement and validate where feasible:
 
 - Keyboard navigation.
-- Focus order.
-- Focus restoration.
-- Screen reader semantics.
-- Contrast.
+- Visible focus.
+- Logical focus order.
+- Screen reader support.
+- Semantic components.
+- Accessible labels.
+- Accessible status announcements.
 - Scalable text.
-- Interaction targets.
+- Contrast.
+- Larger targets.
 - Reduced motion.
-- Accessible filtering.
-- Accessible tables.
+- Configurable visual density.
+- Simplified presentation.
+- Predictable layouts.
 - Accessible graph alternatives.
-- Error and loading announcements.
+- Accessible tables.
+- Error recovery.
+- Clear loading and empty states.
 
-Use existing automated testing infrastructure where possible and add appropriate regression tests.
+Accessibility settings must themselves be accessible.
 
-Do not claim testing was completed when the environment does not support it.
+Do not rely on color alone.
 
 ---
 
-# PHASE 11 — IMPLEMENTATION AND FINAL REPORT
+# PHASE 11 — TEST THE ENTIRE PIPELINE
 
-Do not stop at a code review, plan or list of recommendations.
+Create tests that validate the integration rather than testing disconnected components in isolation.
 
-Implement the required UI reconstruction.
+## Pipeline integration tests
 
-Preserve working functionality unless a change is necessary and justified.
+Test:
 
-Fix the underlying problems rather than masking them.
+Conversation identification
+→ Message extraction
+→ Sender identification
+→ Participant resolution
+→ Deduplication
+→ Persistence
+→ Frequent aggregation
+→ Stats aggregation
+→ UI data binding
 
-Remove obsolete UI code when it is safely replaced.
+Verify that actual data passes through the pipeline correctly.
 
-Maintain modular architecture.
+## Identity tests
 
-At completion, provide a report describing:
+- Current user's messages.
+- Other participant's messages.
+- Two distinct users with identical names.
+- Changed display names.
+- Changed avatars.
+- Missing sender identifiers.
+- Unresolved identities.
+- Group conversation participants where supported.
 
-1. Root causes of the original display failures.
-2. Architectural changes.
-3. Components and modules rebuilt.
-4. Frequent implementation and privacy separation.
-5. Stats dashboard implementation.
-6. Sender attribution implementation.
-7. Accessibility improvements.
-8. Collection integration changes.
-9. Files modified.
-10. Tests performed and their results.
-11. Remaining limitations.
-12. Any Discord DOM assumptions or compatibility concerns.
+## Deduplication tests
 
-## FINAL OBJECTIVE
+- Duplicate messages within a batch.
+- Duplicate messages across batches.
+- Duplicate messages across collection sessions.
+- Duplicate participant records.
+- Duplicate conversation records.
+- Storage-level duplicate prevention.
+- Accurate message counts after deduplication.
+- Repeated collection without unnecessary duplicate insertion.
 
-Build a fully functional, cohesive, modular and accessible Barkly Access interface.
+## Integration tests
 
-Frequent must remain a metadata-only conversation directory.
+- Frequent updates from collection.
+- Stats updates from collection.
+- Correct participant separation.
+- Correct conversation association.
+- Popup state updates.
+- Persisted data reload.
+- Repeated plugin initialization.
+- UI mounting and unmounting.
+- UI state consistency.
 
-Stats must provide distinct analytics for the current user's messages and other participants' messages, with an optional comparison view.
+## Acceptance criteria
 
-The UI must work reliably, integrate with the existing data architecture and embody PAW-HC.
+The implementation is not complete unless:
 
-**The goal is not to make disabled people better at tolerating inaccessible software. The goal is to make software adaptable to the people using it.**
+1. The collector identifies available sender IDs correctly.
+2. The current user and other participant are correctly resolved when identity data is available.
+3. Messages are correctly attributed to their sender.
+4. Message duplicates are prevented.
+5. Participant duplicates are prevented.
+6. Conversation duplicates are prevented.
+7. Frequent displays unique participants/conversations as designed.
+8. Frequent contains no message-content previews.
+9. Stats separates the current user's messages from the other participant's messages.
+10. All modules use the shared data architecture.
+11. The UI renders correctly in the intended environment, or runtime validation limitations are clearly reported.
+12. Automated tests verify the actual data flow.
+13. Existing working functionality is preserved.
+
+---
+
+# PHASE 12 — IMPLEMENT AND REPORT
+
+Do not stop at an audit.
+
+Do not stop at recommendations.
+
+Do not generate another disconnected architecture.
+
+Implement the repairs.
+
+Prioritize a single authoritative data pipeline.
+
+Repair the root causes.
+
+Run automated tests.
+
+Perform runtime validation where possible.
+
+Report:
+
+- Root causes found.
+- Files modified.
+- Data architecture changes.
+- Collection repairs.
+- Sender identification changes.
+- Participant resolution changes.
+- Deduplication changes.
+- Storage integrity changes.
+- Frequent integration.
+- Stats integration.
+- UI rendering repairs.
+- Test results.
+- Runtime validation results.
+- Remaining limitations.
+
+Do not claim that a feature is working unless it has been validated.
+
+## Final objective
+
+Barkly Access must operate as one connected system.
+
+The collector must identify messages and their senders reliably.
+
+The current user and other participant must be correctly distinguished.
+
+Message, participant and conversation records must not be unnecessarily duplicated.
+
+Frequent must use the shared data layer and remain metadata-only.
+
+Stats must use the shared data layer and correctly separate sender analytics.
+
+The UI must actually render and display the collected data.
+
+The architecture must remain modular, maintainable and accessible according to PAW-HC.
+
+**Fix the system that exists. Do not create another disconnected system beside it.**

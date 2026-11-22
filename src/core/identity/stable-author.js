@@ -1,3 +1,9 @@
+export function canonicalConversationId(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const id = String(value).trim();
+  return /^\d{5,}$/.test(id) ? id : null;
+}
+
 export function canonicalAuthorId(value) {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const id = String(value).trim();
@@ -19,7 +25,17 @@ export function mergeAuthorRecords(current, incoming) {
   const incomingUsername = typeof incoming.username === "string" ? incoming.username.trim() : "";
   if (incomingUsername) result.username = incomingUsername;
   if (typeof incoming.avatarUrl === "string" && incoming.avatarUrl) result.avatarUrl = incoming.avatarUrl;
-  for (const direction of ["sent", "received", "unknown"]) result[direction] = count(result[direction]) + count(incoming[direction]);
+  const incomingHasDirection = incoming.sent != null || incoming.received != null || incoming.unknown != null;
+  const incomingUnknown = incomingHasDirection ? count(incoming.unknown) : count(incoming.total);
+  const resultHasDirection = result.sent != null || result.received != null || result.unknown != null;
+  if (!resultHasDirection && count(result.total) > 0) result.unknown = count(result.total);
+  // These records share a stable author ID, so summing their aggregates can
+  // count the same saved history twice after an older duplicate-key migration.
+  // Keep the largest observed value for each bucket; message fingerprints
+  // remain the authoritative way to add new unique messages.
+  result.sent = Math.max(count(result.sent), count(incoming.sent));
+  result.received = Math.max(count(result.received), count(incoming.received));
+  result.unknown = Math.max(count(result.unknown), incomingUnknown);
   result.total = result.sent + result.received + result.unknown;
   result.firstTimestamp = earliest(result.firstTimestamp, incoming.firstTimestamp);
   result.lastTimestamp = latest(result.lastTimestamp, incoming.lastTimestamp);
@@ -37,5 +53,5 @@ export function mergeAuthorRecords(current, incoming) {
 const count = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 const earliest = (a, b) => { const values=[a,b].map(Number).filter(v=>Number.isFinite(v)&&v>=0); return values.length?Math.min(...values):null; };
 const latest = (a, b) => { const values=[a,b].map(Number).filter(v=>Number.isFinite(v)&&v>=0); return values.length?Math.max(...values):null; };
-const mergeCountMap=(a,b)=>{const r={};for(const s of [a,b])if(s&&typeof s==='object')for(const [k,v] of Object.entries(s))if(/^\d{4}-\d{2}-\d{2}$/.test(k))r[k]=count(r[k])+count(v);return r;};
-const mergeCountArray=(a,b)=>Array.from({length:24},(_,h)=>count(a?.[h])+count(b?.[h]));
+const mergeCountMap=(a,b)=>{const r={};for(const s of [a,b])if(s&&typeof s==='object')for(const [k,v] of Object.entries(s))if(/^\d{4}-\d{2}-\d{2}$/.test(k))r[k]=Math.max(count(r[k]),count(v));return r;};
+const mergeCountArray=(a,b)=>Array.from({length:24},(_,h)=>Math.max(count(a?.[h]),count(b?.[h])));

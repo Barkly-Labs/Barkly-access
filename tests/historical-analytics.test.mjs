@@ -7,12 +7,27 @@ import { collectionModeFor } from "../src/core/collection/collection-state.js";
 import { RenderedHistoryAdapter, extractRenderedAuthor } from "../src/integrations/betterdiscord/rendered-history-adapter.js";
 import { getSelectedConversationId } from "../src/integrations/betterdiscord/conversation-selection.js";
 import { groupDailyCounts, busiestHour } from "../src/core/analytics/time-series.js";
+import { discoverCurrentUserId, resolveParticipant, UNRESOLVED_AUTHOR_ID } from "../src/core/identity/participant-resolver.js";
 
 function memoryStore(options = {}) {
   let data = null;
   const store = new HistoricalStore({ load: () => data, save: next => { data = structuredClone(next); }, now: () => 1_800_000_000_000, ...options });
   return { store, read: () => data };
 }
+
+test("participant resolver separates current user, other participants, and unresolved identities", () => {
+  assert.deepEqual(resolveParticipant({ authorId: "self", currentUserId: "self" }), { authorId: "self", isResolved: true, isSelf: true, role: "current-user" });
+  assert.deepEqual(resolveParticipant({ authorId: "other", currentUserId: "self" }), { authorId: "other", isResolved: true, isSelf: false, role: "other-participant" });
+  assert.deepEqual(resolveParticipant({ authorId: null, currentUserId: "self" }), { authorId: UNRESOLVED_AUTHOR_ID, isResolved: false, isSelf: null, role: "unresolved" });
+  const document = { querySelectorAll: selector => {
+    if (selector.includes("a[href")) return [{ getAttribute: () => "/users/123456789012345678", closest: () => ({}) }];
+    return [];
+  } };
+  assert.equal(discoverCurrentUserId(document), "123456789012345678");
+  assert.equal(discoverCurrentUserId({ querySelectorAll: selector => selector.includes('img[src*="/avatars/"]')
+    ? [{ getAttribute: () => "https://cdn.discordapp.com/avatars/123456789012345678/hash.png", closest: () => ({}) }]
+    : [] }), null);
+});
 
 test("historical store aggregates direction and time while persisting no raw message data", () => {
   const { store, read } = memoryStore();
@@ -47,21 +62,59 @@ test("storage canonicalizes and reconciles duplicate person keys without merging
   const store = new HistoricalStore({ load: () => data, save: next => { data = structuredClone(next); } });
   const entry = store.getConversation("100");
   assert.equal(Object.keys(entry.people).length, 2);
-  assert.equal(entry.people.u1.total, 5);
-  assert.equal(entry.people.u1.sent, 3);
+  assert.equal(entry.people.u1.total, 4);
+  assert.equal(entry.people.u1.sent, 2);
   assert.equal(entry.people.u1.received, 2);
+  assert.deepEqual(entry.totals, { sent: 2, received: 3, unknown: 0 });
   assert.equal(entry.people.u1.name, "New Name");
   assert.equal(entry.people.u2.total, 1);
 
   store.applyBatch("100", [{ messageId: "new-1", authorId: "u1", authorName: "Latest Name", timestamp: Date.UTC(2026, 0, 3), isSelf: true }]);
   store.applyBatch("100", [{ messageId: "new-1", authorId: " u1 ", authorName: "Latest Name", timestamp: Date.UTC(2026, 0, 3), isSelf: true }]);
   const repeated = store.getConversation("100");
-  assert.equal(repeated.people.u1.total, 6);
+  assert.equal(repeated.people.u1.total, 5);
   assert.equal(repeated.people.u1.name, "Latest Name");
   assert.equal(repeated.people.u2.total, 1);
 
   store.applyBatch("100", [{ messageId: "missing-author", authorId: "", authorName: "Nobody", timestamp: Date.UTC(2026, 0, 4), isSelf: false }]);
   assert.equal(store.getConversation("100").totals.received, 3);
+});
+
+test("snapshot reconciles duplicate stable conversation IDs without summing copied history", () => {
+  let data = { version: 1, conversations: {
+    "123456789012345678": {
+      conversationId: "123456789012345678", navigationPath: "/channels/@me/123456789012345678",
+      totals: { sent: 0, received: 2, unknown: 0 }, people: {
+        "user-a": { authorId: "user-a", name: "Same Name", total: 2, sent: 0, received: 2, unknown: 0, daily: { "2026-01-01": 2 } },
+      }, seenMessageKeys: ["a", "b"], updatedAt: 10,
+    },
+    " 123456789012345678 ": {
+      conversationId: " 123456789012345678 ", navigationPath: "/channels/@me/123456789012345678",
+      totals: { sent: 0, received: 2, unknown: 0 }, people: {
+        "user-a": { authorId: "user-a", name: "Same Name", total: 2, sent: 0, received: 2, unknown: 0, daily: { "2026-01-01": 2 } },
+      }, seenMessageKeys: ["b", "c"], updatedAt: 20,
+    },
+  } };
+  let writes = 0;
+  const store = new HistoricalStore({ load: () => data, save: next => { writes++; data = structuredClone(next); } });
+  const snapshot = store.snapshot();
+  assert.deepEqual(Object.keys(snapshot.conversations), ["123456789012345678"]);
+  assert.equal(snapshot.conversations["123456789012345678"].people["user-a"].total, 2);
+  assert.deepEqual(snapshot.conversations["123456789012345678"].seenMessageKeys.sort(), ["a", "b", "c"]);
+  assert.equal(writes, 1);
+  store.snapshot();
+  assert.equal(writes, 1, "reconciliation is idempotent");
+});
+
+test("legacy records without stable user IDs remain unattributed instead of being dropped", () => {
+  const data = { version: 1, conversations: { thread: {
+    conversationId: "thread", totals: { sent: 0, received: 0, unknown: 2 },
+    people: { unknown: { name: "Old Display Name", total: 2, unknown: 2 } },
+  } } };
+  const store = new HistoricalStore({ load: () => data, save: () => {} });
+  const person = store.getConversation("thread").people[UNRESOLVED_AUTHOR_ID];
+  assert.equal(person.total, 2);
+  assert.equal(person.name, "Unresolved sender");
 });
 
 test("store clears one conversation or all saved statistics", () => {
@@ -105,6 +158,19 @@ test("statistics summarize per-person totals, date filters, and exclusions", () 
   assert.equal(result.people[0].name, "Me");
 });
 
+test("statistics can safely classify existing unknown aggregates when the current user ID is verified", () => {
+  const { store } = memoryStore();
+  store.applyBatch("verified-thread", [
+    { messageId: "self-unknown", authorId: "self", timestamp: Date.UTC(2026, 1, 1), isSelf: null },
+    { messageId: "other-unknown", authorId: "other", timestamp: Date.UTC(2026, 1, 1), isSelf: null },
+    { messageId: "unresolved", authorId: UNRESOLVED_AUTHOR_ID, timestamp: Date.UTC(2026, 1, 2), isSelf: null },
+  ]);
+  const result = summarizeAnalytics(store.snapshot(), { currentUserId: "self" });
+  assert.deepEqual(result.totals, { sent: 1, received: 1, unknown: 1, tracked: 3 });
+  const filtered = summarizeAnalytics(store.snapshot(), { currentUserId: "self", since: Date.UTC(2026, 1, 1), until: Date.UTC(2026, 1, 1, 23, 59, 59, 999) });
+  assert.deepEqual(filtered.totals, { sent: 1, received: 1, unknown: 0, tracked: 2 });
+});
+
 test("time series groups weekly and monthly totals and identifies the busiest hour", () => {
   const daily = { "2026-02-01": 2, "2026-02-02": 3, "2026-03-03": 4 };
   assert.deepEqual(groupDailyCounts(daily, "month"), [{ period: "2026-02", count: 5 }, { period: "2026-03", count: 4 }]);
@@ -132,6 +198,30 @@ test("collection coordinator handles selected source batches, duplicate refreshe
   assert.equal(store.getConversation("c1").coverage.complete, false);
   await coordinator.collect("c1");
   assert.equal(store.getConversation("c1").people.u1.total, 1);
+});
+
+test("collection coordinator passes the current-user identity into sender normalization", async () => {
+  const { store } = memoryStore();
+  const adapter = {
+    async startScan() {},
+    async getNextBatch() { return { records: [
+      { messageId: "mine", authorId: "self-id", isSelf: false },
+      { messageId: "theirs", authorId: "other-id", isSelf: true },
+    ], done: true, complete: false, stopReason: "visible-edge" }; },
+    async dispose() {},
+  };
+  await new CollectionCoordinator({ adapter, store, getCurrentUserId: () => "self-id" }).collect("thread");
+  assert.deepEqual(store.getConversation("thread").totals, { sent: 1, received: 1, unknown: 0 });
+});
+
+test("rendered author extraction never treats an avatar URL as identity", () => {
+  const row = {
+    getAttribute: () => null,
+    querySelector: selector => selector.includes("img[src")
+      ? { getAttribute: () => "https://cdn.discordapp.com/avatars/123456789012345678/hash.png" }
+      : null,
+  };
+  assert.equal(extractRenderedAuthor(row), null);
 });
 
 test("multi-batch scans count overlap once, persist run coverage, and remain idempotent after reload", async () => {

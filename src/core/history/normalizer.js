@@ -1,4 +1,5 @@
 import { canonicalAuthorId } from "../identity/stable-author.js";
+import { UNRESOLVED_AUTHOR_ID, resolveParticipant } from "../identity/participant-resolver.js";
 
 /**
  * Normalizes source messages for count-only processing.
@@ -12,6 +13,7 @@ export function normalizeMessages(sourceMessages, {
   getAvatarUrl = (m) => m.avatarUrl ?? m.avatar_url ?? "",
   getConversationId = (m) => m.channel_id ?? m.conversationId ?? m.channelId,
   getTimestamp = (m) => m.timestamp ?? m.createdAt,
+  getCurrentUserId = () => null,
   getIsSelf = (m) => typeof m.isSelf === "boolean" ? m.isSelf : null,
 } = {}) {
   if (!Array.isArray(sourceMessages)) {
@@ -21,8 +23,9 @@ export function normalizeMessages(sourceMessages, {
   return sourceMessages.flatMap((m) => {
     if (!m || typeof m !== "object") return [];
     const messageId = getMessageId(m);
-    const authorId = canonicalAuthorId(getAuthorId(m));
-    if (messageId == null || !authorId) return [];
+    const rawAuthorId = getAuthorId(m);
+    const authorId = canonicalAuthorId(rawAuthorId);
+    if (messageId == null) return [];
 
     const rawTimestamp = getTimestamp(m);
     let numericTimestamp = rawTimestamp == null ? null
@@ -30,9 +33,13 @@ export function normalizeMessages(sourceMessages, {
         : Date.parse(rawTimestamp);
     if (typeof rawTimestamp === "number" && numericTimestamp > 0 && numericTimestamp < 1_000_000_000_000) numericTimestamp *= 1000;
     const avatarUrl = String(getAvatarUrl(m) ?? "").slice(0, 500);
+    const resolved = resolveParticipant({ authorId, currentUserId: getCurrentUserId() });
+    const sourceDirection = getIsSelf(m);
+    const isSelf = resolved.isSelf != null ? resolved.isSelf
+      : typeof sourceDirection === "boolean" ? sourceDirection : null;
     return [{
       messageId: String(messageId),
-      authorId: String(authorId),
+      authorId: resolved.authorId,
       authorName: String(getAuthorName(m) ?? "").slice(0, 100),
       authorUsername: String(getAuthorUsername(m) ?? "").slice(0, 100),
       ...(avatarUrl ? { avatarUrl } : {}),
@@ -40,7 +47,7 @@ export function normalizeMessages(sourceMessages, {
         ? null
         : String(getConversationId(m)),
       timestamp: Number.isFinite(numericTimestamp) ? numericTimestamp : null,
-      isSelf: typeof getIsSelf(m) === "boolean" ? getIsSelf(m) : null,
+      isSelf,
     }];
   });
 }

@@ -13,6 +13,7 @@ import { RenderedHistoryAdapter } from './rendered-history-adapter.js';
 import { createDiscordConversationLink } from './frequent-contact-link.js';
 import { getSelectedConversationId } from './conversation-selection.js';
 import frequentStyles from '../../styles/frequent.css';
+import { discoverCurrentUserId, UNRESOLVED_AUTHOR_ID } from '../../core/identity/participant-resolver.js';
 
 export default class BarklyAccess {
   constructor() {
@@ -34,12 +35,13 @@ export default class BarklyAccess {
       getSelectedConversation: () => this.getSelectedConversation(),
       // The adapter deliberately avoids Discord Webpack/internal stores. If a
       // supported identity provider is added later it can be injected here.
-      getCurrentUserId: () => this.state.currentUserId || null,
+      getCurrentUserId: () => this.getCurrentUserId(),
       getConversationPath: () => window.location.pathname,
     });
     this.collectionCoordinator = new CollectionCoordinator({
       adapter: this.historyAdapter,
       store: this.analyticsStore,
+      getCurrentUserId: () => this.getCurrentUserId(),
       onProgress: event => { this.renderStats(); this.refreshFrequent(); this.updateCollectionPopup(event); },
     });
     this.apply(); this.createPanel(); this.groupMessages();
@@ -72,14 +74,18 @@ export default class BarklyAccess {
     BdApi.DOM.addStyle(this.styleId,this.css());
   }
   createPanel(){
-    if(document.getElementById(this.panelId)) return;
+    const previousPanel=document.getElementById(this.panelId);
+    if(previousPanel&&previousPanel===this.panel)return;
+    // A stale node can survive a plugin reload while its old listeners and
+    // instance are gone. Rebuild that node so this instance owns its controls.
+    previousPanel?.remove();
     const p=document.createElement('aside'); p.id=this.panelId; p.setAttribute('aria-label','Barkly Access');
     p.innerHTML=`<button class="ba-main" aria-expanded="false">Barkly Access <span aria-hidden="true">＋</span></button><div class="ba-options" hidden><div class="ba-tabs" role="tablist" aria-label="Barkly Access features"><button type="button" role="tab" aria-selected="true" data-tab="controls" class="ba-tab-active">Access</button><button type="button" role="tab" aria-selected="false" data-tab="frequent">Frequent</button><button type="button" role="tab" aria-selected="false" data-tab="stats">Stats</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><div class="ba-access-settings"><label for="ba-current-user-id">Current Discord user ID <span>(optional; enables reliable sender separation)</span></label><input id="ba-current-user-id" inputmode="numeric" autocomplete="off" maxlength="20" placeholder="Paste your user ID"><label for="ba-control-size">Control size</label><select id="ba-control-size"><option value="normal">Normal</option><option value="large">Large</option></select><label for="ba-density">Visual density</label><select id="ba-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F · quiet view<br>Ctrl+Shift+R · restore</p></section><section data-pane="frequent" hidden><h2 class="ba-frequent-title">Frequent contacts</h2><p class="ba-summary">People and conversations come from the same saved, deduplicated analytics as Stats. Counts mean unique messages collected for that person in that conversation.</p><div class="ba-frequent-controls"><label for="ba-frequent-search">Search people</label><input id="ba-frequent-search" type="search" autocomplete="off" placeholder="Name, username, or ID"><label for="ba-frequent-sort">Sort contacts</label><select id="ba-frequent-sort"><option value="messages">Most messages</option><option value="recent">Most recent interaction</option><option value="name">Name</option></select></div><div class="ba-frequent-status" role="status" aria-live="polite">Frequent contacts update as conversation batches are collected.</div><ul class="ba-frequent-list" aria-label="Tracked people and conversation shortcuts"></ul></section><section data-pane="stats" hidden><h2 class="ba-stats-title">Conversation analytics</h2><p class="ba-summary">Local, metadata-only summaries. Discord exposes only history rendered in the selected conversation, so coverage cannot be confirmed as complete.</p><div class="ba-collection-status" role="status" aria-live="polite"></div><button type="button" data-action="openAnalytics" class="ba-open-analytics">Open Analytics Dashboard</button><button type="button" data-action="collectNow" class="ba-secondary">Backfill selected conversation</button><button type="button" data-action="cancelCollection" class="ba-secondary" hidden>Stop collection</button><button type="button" data-action="clearConversation" class="ba-secondary">Clear this conversation</button><button type="button" data-action="clearAnalytics" class="ba-secondary">Clear all analytics</button></section></div>`;
     p.addEventListener('click',e=>{const b=e.target.closest('button[data-action], button[data-tab], button[data-author], button[data-exclude], button.ba-main');if(!b)return;if(b.dataset.tab){p.querySelectorAll('[data-pane]').forEach(x=>x.hidden=x.dataset.pane!==b.dataset.tab);p.querySelectorAll('[data-tab]').forEach(x=>{const selected=x===b;x.classList.toggle('ba-tab-active',selected);x.setAttribute('aria-selected',String(selected));});if(b.dataset.tab==='stats')this.renderStats();if(b.dataset.tab==='frequent')this.refreshFrequent();return;}if(b.classList.contains('ba-main')){const d=p.querySelector('.ba-options');d.hidden=!d.hidden;b.setAttribute('aria-expanded',String(!d.hidden));b.querySelector('span').textContent=d.hidden?'＋':'−';return;}if(b.dataset.exclude){this.toggleExcluded(b.dataset.exclude);return;}if(b.dataset.author){this.showPersonDetail(b.dataset.author);return;}const a=b.dataset.action;if(a==='restore')this.restore();else if(a==='openAnalytics')this.openAnalyticsDashboard();else if(a==='collectNow')this.startCollectionNow();else if(a==='clearConversation')this.clearCurrentConversation();else if(a==='clearAnalytics')this.clearAllAnalytics();else if(a==='cancelCollection')this.cancelSelectedCollection();else if(a==='quiet')this.toggleQuiet();else if(a)this.toggle(a);});
     p.querySelector('#ba-frequent-search').addEventListener('input',()=>this.refreshFrequent());
     p.querySelector('#ba-frequent-sort').addEventListener('change',()=>this.refreshFrequent());
     const userId=p.querySelector('#ba-current-user-id');userId.value=this.state.currentUserId||'';
-    userId.addEventListener('change',()=>{const value=userId.value.trim();this.state.currentUserId=/^\d{15,20}$/.test(value)?value:'';if(!this.state.currentUserId&&value)BdApi.UI.showToast('Enter a numeric Discord user ID, or leave it blank.',{type:'error'});else BdApi.UI.showToast('Sender identity setting saved locally.',{type:'success'});userId.value=this.state.currentUserId;this.save();this.historyAdapter.getCurrentUserId=()=>this.state.currentUserId||null;this.renderStats();});
+    userId.addEventListener('change',()=>{const value=userId.value.trim();this.state.currentUserId=/^\d{15,20}$/.test(value)?value:'';if(!this.state.currentUserId&&value)BdApi.UI.showToast('Enter a numeric Discord user ID, or leave it blank.',{type:'error'});else BdApi.UI.showToast('Sender identity setting saved locally.',{type:'success'});userId.value=this.state.currentUserId;this.save();this.renderStats();});
     const controlSize=p.querySelector('#ba-control-size');controlSize.value=this.state.controlSize||'normal';controlSize.addEventListener('change',()=>{this.state.controlSize=controlSize.value==='large'?'large':'normal';this.apply();this.save();});
     const density=p.querySelector('#ba-density');density.value=this.state.density||'comfortable';density.addEventListener('change',()=>{this.state.density=density.value==='compact'?'compact':'comfortable';this.apply();this.save();});
     p.querySelector('.ba-tabs').addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;const tabs=[...p.querySelectorAll('[data-tab]')];const index=tabs.indexOf(document.activeElement);if(index<0)return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:event.key==='ArrowRight'?(index+1)%tabs.length:(index-1+tabs.length)%tabs.length;tabs[next].focus();tabs[next].click();});
@@ -87,6 +93,10 @@ export default class BarklyAccess {
   }
   getSelectedConversation(){
     return getSelectedConversationId(window.location.pathname);
+  }
+  getCurrentUserId(){
+    const configured=String(this.state.currentUserId||'').trim();
+    return /^\d{15,20}$/.test(configured)?configured:discoverCurrentUserId(document);
   }
   bindHistoryObserver(){
     if(!this.historyObserver)return;
@@ -180,6 +190,7 @@ export default class BarklyAccess {
   hideCollectionPopup(){clearTimeout(this.collectionPopupTimeout);this.collectionPopup?.remove();this.collectionPopup=null;this.collectionPopupConversation=null;}
   openAnalyticsDashboard(){
     if(this.dashboard){this.dashboard.hidden=false;this.renderAnalyticsDashboard();this.dashboard.querySelector('[data-dashboard-back]')?.focus();return;}
+    document.getElementById('ba-analytics-dashboard')?.remove();
     const view=document.createElement('section');view.id='ba-analytics-dashboard';view.className='ba-dashboard';view.setAttribute('role','dialog');view.setAttribute('aria-modal','true');view.setAttribute('aria-labelledby','ba-dashboard-title');
     view.innerHTML=`<header class="ba-dashboard-header"><button type="button" data-dashboard-back>← Back to Barkly Access</button><div><p class="ba-kicker">BARKLY ACCESS · LOCAL ANALYTICS</p><h1 id="ba-dashboard-title" tabindex="-1">Conversation analytics</h1><p class="ba-dashboard-intro">A readable view of the message metadata this plugin has collected on this device. Message text is not retained.</p></div><button type="button" data-dashboard-clear>Clear analytics</button></header>
       <section class="ba-dashboard-filters" aria-label="Analytics filters"><label>Conversation<select data-filter="conversation"><option value="all">All conversations</option></select></label><label>Person<select data-filter="person"><option value="all">All people</option></select></label><label>From<input type="date" data-filter="from"></label><label>Through<input type="date" data-filter="to"></label><label>Group activity<select data-filter="group"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option></select></label><label>Search people<input type="search" data-filter="search" placeholder="Name or user ID"></label><label>Sort people<select data-filter="sort"><option value="messages">Most messages</option><option value="name">Name</option><option value="recent">Most recent</option></select></label><label>Text size<select data-filter="text"><option value="normal">Normal</option><option value="large">Large</option><option value="xlarge">Extra large</option></select></label><label class="ba-check-filter"><input type="checkbox" data-filter="contrast"> Higher contrast</label></section>
@@ -212,7 +223,7 @@ export default class BarklyAccess {
     const from=view.querySelector('[data-filter="from"]').value;const to=view.querySelector('[data-filter="to"]').value;
     const since=from?Date.parse(`${from}T00:00:00.000Z`):null;const until=to?Date.parse(`${to}T23:59:59.999Z`):null;
     const personFilter=personSelect.value;const analysisScope=personFilter==='all'?scope:scope.map(item=>{const person=item.people[personFilter];if(!person)return {...item,totals:{sent:0,received:0,unknown:0},people:{},daily:{},dailySent:{},dailyReceived:{},dailyUnknown:{},hourly:Array(24).fill(0)};return {...item,totals:{sent:person.sent,received:person.received,unknown:person.unknown},people:{[person.authorId]:person},excludedAuthors:[],daily:person.daily,dailySent:person.dailySent,dailyReceived:person.dailyReceived,dailyUnknown:person.dailyUnknown,hourly:person.hourly};});
-    const summary=summarizeAnalytics({version:all.version,conversations:Object.fromEntries(analysisScope.map(item=>[item.conversationId,item]))},{since,until,search:view.querySelector('[data-filter="search"]').value,granularity:view.querySelector('[data-filter="group"]').value});
+    const summary=summarizeAnalytics({version:all.version,conversations:Object.fromEntries(analysisScope.map(item=>[item.conversationId,item]))},{since,until,search:view.querySelector('[data-filter="search"]').value,granularity:view.querySelector('[data-filter="group"]').value,currentUserId:this.getCurrentUserId()});
     const people=summary.people;const sort=view.querySelector('[data-filter="sort"]').value;
     people.sort((a,b)=>sort==='name'?a.name.localeCompare(b.name):sort==='recent'?(b.lastTimestamp||0)-(a.lastTimestamp||0):b.total-a.total||a.name.localeCompare(b.name));
     const totals=summary.totals;let dates=summary.daily.map(point=>Date.parse(`${point.date}T00:00:00.000Z`)).filter(Number.isFinite);
@@ -223,11 +234,11 @@ export default class BarklyAccess {
     const metricRoot=view.querySelector('[data-dashboard-metrics]');metricRoot.replaceChildren();metrics.forEach(([label,value])=>{const card=document.createElement('article');card.className='ba-metric';const caption=document.createElement('h3');caption.textContent=label;const amount=document.createElement('p');amount.textContent=value;card.append(caption,amount);metricRoot.append(card);});
     const coverage=view.querySelector('[data-dashboard-coverage]');const active=scope.filter(item=>this.collectionCoordinator.active.has(item.conversationId)).length;const complete=scope.filter(item=>item.coverage.complete).length;
     coverage.textContent=`Coverage is based on the visible UI only. ${scope.length} tracked conversation(s); ${active} collecting now; ${complete} marked complete by the source. Discord does not expose a definitive total-history count, so “complete” is unavailable for this UI adapter. ${scope.reduce((n,item)=>n+(item.coverage.recordsProcessed||0),0).toLocaleString()} unique message records have been processed. ${scope.reduce((n,item)=>n+(item.coverage.encountered||0),0).toLocaleString()} records encountered in the latest saved runs; ${scope.reduce((n,item)=>n+(item.coverage.duplicatesIgnored||0),0).toLocaleString()} duplicates ignored in those runs.`;
-    const currentUserId=String(this.state.currentUserId||'');
-    const senderStats=scope.reduce((result,item)=>{for(const person of Object.values(item.people)){if(currentUserId&&person.authorId===currentUserId){result.mine.sent+=person.sent||0;result.mine.unknown+=person.unknown||0;}else{result.other.received+=person.received||0;result.other.unknown+=person.unknown||0;}}return result;},{mine:{sent:0,unknown:0},other:{received:0,unknown:0}});
+    const currentUserId=String(this.getCurrentUserId()||'');
+    const senderStats=scope.reduce((result,item)=>{for(const person of Object.values(item.people)){if(person.authorId==='__unresolved_author__')continue;if(currentUserId&&person.authorId===currentUserId){result.mine.sent+=person.total||0;}else if(currentUserId){result.other.received+=person.total||0;}}return result;},{mine:{sent:0},other:{received:0}});
     const myRoot=view.querySelector('[data-dashboard-my]'),otherRoot=view.querySelector('[data-dashboard-other]'),compareRoot=view.querySelector('[data-dashboard-compare]');
     if(!currentUserId){myRoot.textContent='Set your numeric Discord user ID in Barkly Access settings to separate and verify your sent messages.';otherRoot.textContent='Set your numeric Discord user ID to isolate other participants. Unknown direction or sender records are never silently attributed.';compareRoot.textContent='Comparison is unavailable until a verified current-user ID is set.';}
-    else {const mineCount=senderStats.mine.sent+senderStats.mine.unknown;const otherCount=senderStats.other.received+senderStats.other.unknown;myRoot.textContent=`${senderStats.mine.sent.toLocaleString()} reliably current-user sent messages${senderStats.mine.unknown?`; ${senderStats.mine.unknown.toLocaleString()} unknown-direction records remain unattributed`:''}.`;otherRoot.textContent=`${senderStats.other.received.toLocaleString()} participant received messages${senderStats.other.unknown?`; ${senderStats.other.unknown.toLocaleString()} unknown-sender or unknown-direction records remain unattributed`:''}.`;compareRoot.textContent=`Current user: ${mineCount.toLocaleString()} · Other participants: ${otherCount.toLocaleString()} · Difference: ${Math.abs(mineCount-otherCount).toLocaleString()} messages.`;}
+    else {const unresolved=scope.reduce((n,item)=>n+Object.entries(item.people).filter(([id])=>id==='__unresolved_author__').reduce((sum,[,person])=>sum+(person.total||0),0),0);const mineCount=senderStats.mine.sent;const otherCount=senderStats.other.received;myRoot.textContent=`${senderStats.mine.sent.toLocaleString()} reliably current-user sent messages${unresolved?`; ${unresolved.toLocaleString()} unresolved sender records remain unattributed`:''}.`;otherRoot.textContent=`${senderStats.other.received.toLocaleString()} reliably other-participant received messages.`;compareRoot.textContent=`Current user: ${mineCount.toLocaleString()} · Other participants: ${otherCount.toLocaleString()} · Difference: ${Math.abs(mineCount-otherCount).toLocaleString()} messages.`;}
     this.fillTable(view.querySelector('[data-dashboard-activity]'),summary.activity.map(point=>[point.period,point.count]));
     const hours=view.querySelector('[data-dashboard-hours]');hours.replaceChildren();
     if(from||to){view.querySelector('[data-hour-note]').textContent='Hourly totals are retained overall, but are not stored per date. Clear the date filter to view all-date hourly totals.';this.fillTable(hours,[],'Not available for a date-filtered view.');}
@@ -267,6 +278,7 @@ export default class BarklyAccess {
     const contacts=buildFrequentContacts(this.analyticsStore.snapshot(),{
       search:this.panel.querySelector('#ba-frequent-search')?.value||'',
       sort:this.panel.querySelector('#ba-frequent-sort')?.value||'messages',
+      currentUserId:this.getCurrentUserId(),
     });
     const status=this.panel.querySelector('.ba-frequent-status');
     if(!contacts.length){

@@ -1,19 +1,24 @@
 import { busiestHour, groupDailyCounts } from "./time-series.js";
+import { UNRESOLVED_AUTHOR_ID } from "../identity/participant-resolver.js";
+import { canonicalAuthorId } from "../identity/stable-author.js";
 
-export function summarizeAnalytics(snapshot, { since = null, until = null, search = "", granularity = "day" } = {}) {
+export function summarizeAnalytics(snapshot, { since = null, until = null, search = "", granularity = "day", currentUserId = null } = {}) {
   const conversations = Object.values(snapshot?.conversations || {});
   const totals = { sent: 0, received: 0, unknown: 0 };
   const people = new Map();
   const daily = new Map();
   const hourly = Array(24).fill(0);
   const query = search.trim().toLocaleLowerCase();
+  const verifiedCurrentUserId = canonicalAuthorId(currentUserId);
   let newestActivity = null;
 
   for (const conversation of conversations) {
-    if (since == null && until == null) {
-      totals.sent += conversation.totals.sent;
-      totals.received += conversation.totals.received;
-      totals.unknown += conversation.totals.unknown || 0;
+    if (!verifiedCurrentUserId) {
+      if (since == null && until == null) {
+        totals.sent += conversation.totals.sent;
+        totals.received += conversation.totals.received;
+        totals.unknown += conversation.totals.unknown || 0;
+      }
     }
     conversation.hourly.forEach((count, hour) => { hourly[hour] += count; });
     for (const [day, count] of Object.entries(conversation.daily)) {
@@ -22,17 +27,42 @@ export function summarizeAnalytics(snapshot, { since = null, until = null, searc
       if ((since != null && dayEnd < since) || (until != null && dayStart > until)) continue;
       daily.set(day, (daily.get(day) || 0) + count);
       const inRange = (since == null || dayEnd >= since) && (until == null || dayStart <= until);
-      if (inRange && (since != null || until != null)) {
+      if (!verifiedCurrentUserId && inRange && (since != null || until != null)) {
         totals.sent += conversation.dailySent[day] || 0;
         totals.received += conversation.dailyReceived[day] || 0;
         totals.unknown += conversation.dailyUnknown[day] || 0;
       }
     }
+    if (verifiedCurrentUserId) {
+      for (const person of Object.values(conversation.people)) {
+        const direction = person.authorId === UNRESOLVED_AUTHOR_ID ? "unknown"
+          : person.authorId === verifiedCurrentUserId ? "sent" : "received";
+        if (since == null && until == null) {
+          totals[direction] += Number(person.total) || 0;
+        } else {
+          for (const [day, count] of Object.entries(person.daily || {})) {
+            const start = Date.parse(`${day}T00:00:00.000Z`), end = start + 86_400_000 - 1;
+            if ((since != null && end < since) || (until != null && start > until)) continue;
+            totals[direction] += count;
+          }
+        }
+      }
+    }
     for (const person of Object.values(conversation.people)) {
+      if (person.authorId === UNRESOLVED_AUTHOR_ID) continue;
       if (conversation.excludedAuthors.includes(person.authorId)) continue;
       if (query && !person.name.toLocaleLowerCase().includes(query)) continue;
       const current = people.get(person.authorId) || { authorId: person.authorId, name: person.name, sent: 0, received: 0, unknown: 0, total: 0, firstTimestamp: null, lastTimestamp: null };
-      if (since == null && until == null) {
+      if (verifiedCurrentUserId) {
+        const direction = person.authorId === UNRESOLVED_AUTHOR_ID ? "unknown"
+          : person.authorId === verifiedCurrentUserId ? "sent" : "received";
+        if (since == null && until == null) current[direction] += Number(person.total) || 0;
+        else for (const [day, count] of Object.entries(person.daily || {})) {
+          const start = Date.parse(`${day}T00:00:00.000Z`), end = start + 86_400_000 - 1;
+          if ((since != null && end < since) || (until != null && start > until)) continue;
+          current[direction] += count;
+        }
+      } else if (since == null && until == null) {
         current.sent += person.sent;
         current.received += person.received;
         current.unknown += person.unknown || 0;

@@ -30,6 +30,11 @@ __export(BarklyAccess_plugin_exports, {
 module.exports = __toCommonJS(BarklyAccess_plugin_exports);
 
 // src/core/identity/stable-author.js
+function canonicalConversationId(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const id = String(value).trim();
+  return /^\d{5,}$/.test(id) ? id : null;
+}
 function canonicalAuthorId(value) {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const id = String(value).trim();
@@ -50,7 +55,13 @@ function mergeAuthorRecords(current, incoming) {
   const incomingUsername = typeof incoming.username === "string" ? incoming.username.trim() : "";
   if (incomingUsername) result.username = incomingUsername;
   if (typeof incoming.avatarUrl === "string" && incoming.avatarUrl) result.avatarUrl = incoming.avatarUrl;
-  for (const direction of ["sent", "received", "unknown"]) result[direction] = count(result[direction]) + count(incoming[direction]);
+  const incomingHasDirection = incoming.sent != null || incoming.received != null || incoming.unknown != null;
+  const incomingUnknown = incomingHasDirection ? count(incoming.unknown) : count(incoming.total);
+  const resultHasDirection = result.sent != null || result.received != null || result.unknown != null;
+  if (!resultHasDirection && count(result.total) > 0) result.unknown = count(result.total);
+  result.sent = Math.max(count(result.sent), count(incoming.sent));
+  result.received = Math.max(count(result.received), count(incoming.received));
+  result.unknown = Math.max(count(result.unknown), incomingUnknown);
   result.total = result.sent + result.received + result.unknown;
   result.firstTimestamp = earliest(result.firstTimestamp, incoming.firstTimestamp);
   result.lastTimestamp = latest(result.lastTimestamp, incoming.lastTimestamp);
@@ -76,11 +87,11 @@ var latest = (a, b) => {
 var mergeCountMap = (a, b) => {
   const r = {};
   for (const s of [a, b]) if (s && typeof s === "object") {
-    for (const [k, v] of Object.entries(s)) if (/^\d{4}-\d{2}-\d{2}$/.test(k)) r[k] = count(r[k]) + count(v);
+    for (const [k, v] of Object.entries(s)) if (/^\d{4}-\d{2}-\d{2}$/.test(k)) r[k] = Math.max(count(r[k]), count(v));
   }
   return r;
 };
-var mergeCountArray = (a, b) => Array.from({ length: 24 }, (_, h) => count(a?.[h]) + count(b?.[h]));
+var mergeCountArray = (a, b) => Array.from({ length: 24 }, (_, h) => Math.max(count(a?.[h]), count(b?.[h])));
 
 // src/core/privacy/data-policy.js
 var ANALYTICS_SCHEMA_VERSION = 1;
@@ -129,6 +140,41 @@ function classifyCollectionOutcome({ mode = "initial", stopReason = null, comple
   return "incomplete";
 }
 
+// src/core/identity/participant-resolver.js
+var UNRESOLVED_AUTHOR_ID = "__unresolved_author__";
+function resolveParticipant({ authorId, currentUserId } = {}) {
+  const stableAuthorId = canonicalAuthorId(authorId);
+  if (!stableAuthorId) {
+    return { authorId: UNRESOLVED_AUTHOR_ID, isResolved: false, isSelf: null, role: "unresolved" };
+  }
+  const stableCurrentUserId = canonicalAuthorId(currentUserId);
+  if (stableCurrentUserId && stableAuthorId === stableCurrentUserId) {
+    return { authorId: stableAuthorId, isResolved: true, isSelf: true, role: "current-user" };
+  }
+  if (!stableCurrentUserId) {
+    return { authorId: stableAuthorId, isResolved: true, isSelf: null, role: "participant" };
+  }
+  return { authorId: stableAuthorId, isResolved: true, isSelf: false, role: "other-participant" };
+}
+function discoverCurrentUserId(document2) {
+  if (!document2?.querySelectorAll) return null;
+  const candidates = [
+    ...document2.querySelectorAll("[data-user-id], [data-author-id]"),
+    ...document2.querySelectorAll('a[href*="/users/"]')
+  ];
+  for (const node of candidates) {
+    const direct = node.getAttribute?.("data-user-id") || node.getAttribute?.("data-author-id");
+    const href = node.getAttribute?.("href") || "";
+    const directId = /^\d{5,}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
+    const id = canonicalAuthorId(directId || href.match(/\/users\/(\d{5,})/)?.[1]);
+    if (id) {
+      const accountContext = node.closest?.('[class*="account" i], [class*="panels" i]');
+      if (accountContext) return id;
+    }
+  }
+  return null;
+}
+
 // src/core/storage/historical-store.js
 var emptyState = () => ({ version: ANALYTICS_SCHEMA_VERSION, conversations: {} });
 var HistoricalStore = class {
@@ -156,14 +202,18 @@ var HistoricalStore = class {
     let needsWrite = false;
     for (const [id, raw] of Object.entries(value.conversations)) {
       if (!raw || typeof raw !== "object") continue;
+      const stableId = canonicalConversationId(raw.conversationId) || canonicalConversationId(id) || String(id).trim();
+      if (stableId !== String(id) || raw.conversationId != null && String(raw.conversationId) !== stableId) needsWrite = true;
       const people = {};
+      let duplicatePerson = false;
       for (const [personId, person] of Object.entries(raw.people || {})) {
         if (!person || typeof person !== "object") continue;
-        const canonicalId = canonicalAuthorId(person.authorId ?? personId);
-        if (!canonicalId) continue;
+        const stableAuthorId = canonicalAuthorId(person.authorId ?? personId);
+        const canonicalId = stableAuthorId || UNRESOLVED_AUTHOR_ID;
+        if (!stableAuthorId) needsWrite = true;
         const normalized = {
           authorId: canonicalId,
-          name: safeString(person.name, 100) || canonicalId,
+          name: stableAuthorId ? safeString(person.name, 100) || canonicalId : "Unresolved sender",
           username: safeString(person.username, 100),
           avatarUrl: safeAvatar(person.avatarUrl),
           sent: count2(person.sent),
@@ -182,11 +232,12 @@ var HistoricalStore = class {
           hourlyUnknown: countArray(person.hourlyUnknown)
         };
         if (String(personId) !== canonicalId || people[canonicalId]) needsWrite = true;
+        if (people[canonicalId]) duplicatePerson = true;
         people[canonicalId] = mergeAuthorRecords(people[canonicalId], normalized);
       }
-      conversations[String(id)] = {
-        conversationId: String(id),
-        navigationPath: validConversationPath(raw.navigationPath, id),
+      const normalizedConversation = {
+        conversationId: stableId,
+        navigationPath: validConversationPath(raw.navigationPath, stableId),
         collection: sanitizeCollection(raw.collection),
         status: validStatus(raw.status) ? raw.status : "partial",
         totals: { sent: count2(raw.totals?.sent), received: count2(raw.totals?.received), unknown: count2(raw.totals?.unknown) },
@@ -219,6 +270,13 @@ var HistoricalStore = class {
         updatedAt: count2(raw.updatedAt),
         ...raw.error ? { error: safeString(raw.error, 240) } : {}
       };
+      if (duplicatePerson) reconcileConversationTotals(normalizedConversation);
+      if (conversations[stableId]) {
+        needsWrite = true;
+        conversations[stableId] = mergeConversationRecords(conversations[stableId], normalizedConversation, this.dedupeLimit);
+      } else {
+        conversations[stableId] = normalizedConversation;
+      }
     }
     const reconciled = { version: ANALYTICS_SCHEMA_VERSION, conversations };
     if (needsWrite) {
@@ -233,11 +291,11 @@ var HistoricalStore = class {
   }
   getConversation(conversationId) {
     const snapshot = this.snapshot();
-    return structuredClone(snapshot.conversations[String(conversationId)] || null);
+    return structuredClone(snapshot.conversations[storageConversationId(conversationId)] || null);
   }
   markStatus(conversationId, status, details = {}) {
     const state = this.snapshot();
-    const id = String(conversationId);
+    const id = storageConversationId(conversationId);
     const entry = state.conversations[id] || this.newConversation(id);
     entry.status = status;
     entry.updatedAt = this.now();
@@ -252,7 +310,7 @@ var HistoricalStore = class {
   applyBatch(conversationId, records, { status = "partial", complete = false } = {}) {
     if (!Array.isArray(records)) throw new TypeError("records must be an array");
     const state = this.snapshot();
-    const id = String(conversationId);
+    const id = storageConversationId(conversationId);
     const entry = state.conversations[id] || this.newConversation(id);
     const seen = new Set(entry.seenMessageKeys);
     const accepted = [];
@@ -291,12 +349,12 @@ var HistoricalStore = class {
   }
   clearConversation(conversationId) {
     const state = this.snapshot();
-    delete state.conversations[String(conversationId)];
+    delete state.conversations[storageConversationId(conversationId)];
     this.writeState(state);
   }
   markCollection(conversationId, changes = {}) {
     const state = this.snapshot();
-    const id = String(conversationId);
+    const id = storageConversationId(conversationId);
     const entry = state.conversations[id] || this.newConversation(id);
     entry.collection = sanitizeCollection({ ...entry.collection, ...changes });
     entry.updatedAt = this.now();
@@ -306,7 +364,7 @@ var HistoricalStore = class {
   }
   setAuthorExcluded(conversationId, authorId, excluded) {
     const state = this.snapshot();
-    const entry = state.conversations[String(conversationId)];
+    const entry = state.conversations[storageConversationId(conversationId)];
     if (!entry) return;
     const id = canonicalAuthorId(authorId);
     if (!id) return;
@@ -407,12 +465,85 @@ var HistoricalStore = class {
 var count2 = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 var finiteOrNull = (value) => Number.isFinite(Number(value)) && value != null ? Number(value) : null;
 var safeString = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
+var storageConversationId = (value) => canonicalConversationId(value) || String(value).trim();
 var safeAvatar = (value) => typeof value === "string" && /^https:\/\/[^\s]{1,500}$/.test(value) ? value : "";
 var validConversationPath = (path, conversationId) => {
   if (typeof path !== "string") return null;
   const match = path.match(/^\/channels\/(?:@me|\d+)\/(\d+)\/?$/);
   return match && match[1] === String(conversationId) ? path.replace(/\/$/, "") : null;
 };
+function mergeConversationRecords(current, incoming, dedupeLimit) {
+  const people = { ...current.people };
+  for (const [authorId, person] of Object.entries(incoming.people)) {
+    people[authorId] = mergeAuthorRecords(people[authorId], person);
+  }
+  const sumPeople = (key) => Object.values(people).reduce((total, person) => total + count2(person[key]), 0);
+  const mergeMap = (a, b) => {
+    const result = { ...a };
+    for (const [key, value] of Object.entries(b || {})) result[key] = Math.max(count2(result[key]), count2(value));
+    return result;
+  };
+  const mergeArray = (a, b) => Array.from({ length: 24 }, (_, index) => Math.max(count2(a?.[index]), count2(b?.[index])));
+  const latest2 = (a, b) => Math.max(count2(a), count2(b));
+  const seenMessageKeys = [.../* @__PURE__ */ new Set([...current.seenMessageKeys, ...incoming.seenMessageKeys])];
+  const selected = incoming.updatedAt >= current.updatedAt ? incoming : current;
+  const totals = {
+    sent: sumPeople("sent"),
+    received: sumPeople("received"),
+    unknown: sumPeople("unknown")
+  };
+  if (!Object.keys(people).length) {
+    totals.sent = Math.max(current.totals.sent, incoming.totals.sent);
+    totals.received = Math.max(current.totals.received, incoming.totals.received);
+    totals.unknown = Math.max(current.totals.unknown, incoming.totals.unknown);
+  }
+  return {
+    ...selected,
+    conversationId: current.conversationId,
+    navigationPath: current.navigationPath || incoming.navigationPath,
+    collection: incoming.collection.lastCollectionAt >= current.collection.lastCollectionAt ? incoming.collection : current.collection,
+    status: incoming.updatedAt >= current.updatedAt ? incoming.status : current.status,
+    totals,
+    people,
+    daily: mergeMap(current.daily, incoming.daily),
+    dailySent: mergeMap(current.dailySent, incoming.dailySent),
+    dailyReceived: mergeMap(current.dailyReceived, incoming.dailyReceived),
+    dailyUnknown: mergeMap(current.dailyUnknown, incoming.dailyUnknown),
+    hourly: mergeArray(current.hourly, incoming.hourly),
+    hourlySent: mergeArray(current.hourlySent, incoming.hourlySent),
+    hourlyReceived: mergeArray(current.hourlyReceived, incoming.hourlyReceived),
+    hourlyUnknown: mergeArray(current.hourlyUnknown, incoming.hourlyUnknown),
+    excludedAuthors: [.../* @__PURE__ */ new Set([...current.excludedAuthors, ...incoming.excludedAuthors])],
+    seenMessageKeys: seenMessageKeys.length > dedupeLimit ? seenMessageKeys.slice(Math.max(0, seenMessageKeys.length - dedupeLimit)) : seenMessageKeys,
+    coverage: {
+      ...current.coverage,
+      ...incoming.coverage,
+      recordsProcessed: latest2(current.coverage.recordsProcessed, incoming.coverage.recordsProcessed),
+      encountered: latest2(current.coverage.encountered, incoming.coverage.encountered),
+      duplicatesIgnored: latest2(current.coverage.duplicatesIgnored, incoming.coverage.duplicatesIgnored),
+      batches: latest2(current.coverage.batches, incoming.coverage.batches),
+      oldestTimestamp: minDate(current.coverage.oldestTimestamp, [incoming.coverage.oldestTimestamp]),
+      newestTimestamp: maxDate(current.coverage.newestTimestamp, [incoming.coverage.newestTimestamp])
+    },
+    updatedAt: latest2(current.updatedAt, incoming.updatedAt)
+  };
+}
+function reconcileConversationTotals(conversation) {
+  const people = Object.values(conversation.people);
+  conversation.totals = {
+    sent: people.reduce((sum, person) => sum + count2(person.sent), 0),
+    received: people.reduce((sum, person) => sum + count2(person.received), 0),
+    unknown: people.reduce((sum, person) => sum + count2(person.unknown), 0)
+  };
+  const sumMaps = (field) => {
+    const result = {};
+    for (const person of people) for (const [key, value] of Object.entries(person[field] || {})) result[key] = (result[key] || 0) + count2(value);
+    return result;
+  };
+  const sumArrays = (field) => Array.from({ length: 24 }, (_, hour) => people.reduce((sum, person) => sum + count2(person[field]?.[hour]), 0));
+  for (const field of ["daily", "dailySent", "dailyReceived", "dailyUnknown"]) conversation[field] = sumMaps(field);
+  for (const field of ["hourly", "hourlySent", "hourlyReceived", "hourlyUnknown"]) conversation[field] = sumArrays(field);
+}
 var sanitizeCollection = (raw) => {
   const state = INITIAL_COLLECTION_STATES.includes(raw?.state) ? raw.state : "never_collected";
   const operation = ["idle", "collecting", "completed", "incomplete", "interrupted", "failed"].includes(raw?.lastOperationStatus) ? raw.lastOperationStatus : "idle";
@@ -452,6 +583,7 @@ function normalizeMessages(sourceMessages, {
   getAvatarUrl = (m) => m.avatarUrl ?? m.avatar_url ?? "",
   getConversationId = (m) => m.channel_id ?? m.conversationId ?? m.channelId,
   getTimestamp = (m) => m.timestamp ?? m.createdAt,
+  getCurrentUserId = () => null,
   getIsSelf = (m) => typeof m.isSelf === "boolean" ? m.isSelf : null
 } = {}) {
   if (!Array.isArray(sourceMessages)) {
@@ -460,31 +592,36 @@ function normalizeMessages(sourceMessages, {
   return sourceMessages.flatMap((m) => {
     if (!m || typeof m !== "object") return [];
     const messageId = getMessageId(m);
-    const authorId = canonicalAuthorId(getAuthorId(m));
-    if (messageId == null || !authorId) return [];
+    const rawAuthorId = getAuthorId(m);
+    const authorId = canonicalAuthorId(rawAuthorId);
+    if (messageId == null) return [];
     const rawTimestamp = getTimestamp(m);
     let numericTimestamp = rawTimestamp == null ? null : typeof rawTimestamp === "number" ? rawTimestamp : Date.parse(rawTimestamp);
     if (typeof rawTimestamp === "number" && numericTimestamp > 0 && numericTimestamp < 1e12) numericTimestamp *= 1e3;
     const avatarUrl = String(getAvatarUrl(m) ?? "").slice(0, 500);
+    const resolved = resolveParticipant({ authorId, currentUserId: getCurrentUserId() });
+    const sourceDirection = getIsSelf(m);
+    const isSelf = resolved.isSelf != null ? resolved.isSelf : typeof sourceDirection === "boolean" ? sourceDirection : null;
     return [{
       messageId: String(messageId),
-      authorId: String(authorId),
+      authorId: resolved.authorId,
       authorName: String(getAuthorName(m) ?? "").slice(0, 100),
       authorUsername: String(getAuthorUsername(m) ?? "").slice(0, 100),
       ...avatarUrl ? { avatarUrl } : {},
       conversationId: getConversationId(m) == null ? null : String(getConversationId(m)),
       timestamp: Number.isFinite(numericTimestamp) ? numericTimestamp : null,
-      isSelf: typeof getIsSelf(m) === "boolean" ? getIsSelf(m) : null
+      isSelf
     }];
   });
 }
 
 // src/core/collection/collection-coordinator.js
 var CollectionCoordinator = class {
-  constructor({ adapter, store, onProgress = () => {
+  constructor({ adapter, store, getCurrentUserId = () => null, onProgress = () => {
   } }) {
     this.adapter = adapter;
     this.store = store;
+    this.getCurrentUserId = getCurrentUserId;
     this.onProgress = onProgress;
     this.active = /* @__PURE__ */ new Map();
   }
@@ -551,6 +688,7 @@ var CollectionCoordinator = class {
           getAvatarUrl: (m) => m.avatarUrl ?? m.avatar_url ?? "",
           getConversationId: (m) => m.conversationId ?? m.channel_id ?? m.channelId,
           getTimestamp: (m) => m.timestamp ?? m.createdAt ?? m.created_at,
+          getCurrentUserId: this.getCurrentUserId,
           getIsSelf: (m) => typeof m.isSelf === "boolean" ? m.isSelf : null
         }).map((record) => ({ ...record, conversationId }));
         const result = this.store.applyBatch(conversationId, normalized, { status: "partial", complete: batch.complete === true });
@@ -665,19 +803,22 @@ function isoWeek(day) {
 }
 
 // src/core/analytics/statistics-engine.js
-function summarizeAnalytics(snapshot, { since = null, until = null, search = "", granularity = "day" } = {}) {
+function summarizeAnalytics(snapshot, { since = null, until = null, search = "", granularity = "day", currentUserId = null } = {}) {
   const conversations = Object.values(snapshot?.conversations || {});
   const totals = { sent: 0, received: 0, unknown: 0 };
   const people = /* @__PURE__ */ new Map();
   const daily = /* @__PURE__ */ new Map();
   const hourly = Array(24).fill(0);
   const query = search.trim().toLocaleLowerCase();
+  const verifiedCurrentUserId = canonicalAuthorId(currentUserId);
   let newestActivity = null;
   for (const conversation of conversations) {
-    if (since == null && until == null) {
-      totals.sent += conversation.totals.sent;
-      totals.received += conversation.totals.received;
-      totals.unknown += conversation.totals.unknown || 0;
+    if (!verifiedCurrentUserId) {
+      if (since == null && until == null) {
+        totals.sent += conversation.totals.sent;
+        totals.received += conversation.totals.received;
+        totals.unknown += conversation.totals.unknown || 0;
+      }
     }
     conversation.hourly.forEach((count3, hour) => {
       hourly[hour] += count3;
@@ -688,17 +829,40 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
       if (since != null && dayEnd < since || until != null && dayStart > until) continue;
       daily.set(day, (daily.get(day) || 0) + count3);
       const inRange = (since == null || dayEnd >= since) && (until == null || dayStart <= until);
-      if (inRange && (since != null || until != null)) {
+      if (!verifiedCurrentUserId && inRange && (since != null || until != null)) {
         totals.sent += conversation.dailySent[day] || 0;
         totals.received += conversation.dailyReceived[day] || 0;
         totals.unknown += conversation.dailyUnknown[day] || 0;
       }
     }
+    if (verifiedCurrentUserId) {
+      for (const person of Object.values(conversation.people)) {
+        const direction = person.authorId === UNRESOLVED_AUTHOR_ID ? "unknown" : person.authorId === verifiedCurrentUserId ? "sent" : "received";
+        if (since == null && until == null) {
+          totals[direction] += Number(person.total) || 0;
+        } else {
+          for (const [day, count3] of Object.entries(person.daily || {})) {
+            const start = Date.parse(`${day}T00:00:00.000Z`), end = start + 864e5 - 1;
+            if (since != null && end < since || until != null && start > until) continue;
+            totals[direction] += count3;
+          }
+        }
+      }
+    }
     for (const person of Object.values(conversation.people)) {
+      if (person.authorId === UNRESOLVED_AUTHOR_ID) continue;
       if (conversation.excludedAuthors.includes(person.authorId)) continue;
       if (query && !person.name.toLocaleLowerCase().includes(query)) continue;
       const current = people.get(person.authorId) || { authorId: person.authorId, name: person.name, sent: 0, received: 0, unknown: 0, total: 0, firstTimestamp: null, lastTimestamp: null };
-      if (since == null && until == null) {
+      if (verifiedCurrentUserId) {
+        const direction = person.authorId === UNRESOLVED_AUTHOR_ID ? "unknown" : person.authorId === verifiedCurrentUserId ? "sent" : "received";
+        if (since == null && until == null) current[direction] += Number(person.total) || 0;
+        else for (const [day, count3] of Object.entries(person.daily || {})) {
+          const start = Date.parse(`${day}T00:00:00.000Z`), end = start + 864e5 - 1;
+          if (since != null && end < since || until != null && start > until) continue;
+          current[direction] += count3;
+        }
+      } else if (since == null && until == null) {
         current.sent += person.sent;
         current.received += person.received;
         current.unknown += person.unknown || 0;
@@ -746,13 +910,14 @@ function getConversationHref(pathname, conversationId) {
 }
 
 // src/core/frequent/contact-index.js
-function buildFrequentContacts(snapshot, { search = "", sort = "messages" } = {}) {
+function buildFrequentContacts(snapshot, { search = "", sort = "messages", currentUserId = null } = {}) {
   const query = String(search).trim().toLocaleLowerCase();
+  const selfId = canonicalAuthorId(currentUserId);
   const contacts = /* @__PURE__ */ new Map();
   for (const conversation of Object.values(snapshot?.conversations || {})) {
     for (const [authorId, person] of Object.entries(conversation.people || {})) {
       const stableId = canonicalAuthorId(person.authorId ?? authorId);
-      if (!stableId) continue;
+      if (!stableId || stableId === UNRESOLVED_AUTHOR_ID || (selfId && stableId === selfId)) continue;
       const total = Number.isFinite(person.total) ? person.total : (person.sent || 0) + (person.received || 0) + (person.unknown || 0);
       if (total <= 0) continue;
       const key = `${conversation.conversationId}\0${stableId}`;
@@ -795,12 +960,12 @@ function buildFrequentContacts(snapshot, { search = "", sort = "messages" } = {}
 // src/integrations/betterdiscord/rendered-history-adapter.js
 function extractRenderedAuthor(row) {
   if (!row) return null;
-  const direct = row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id") || row.querySelector?.("[data-user-id], [data-author-id]")?.getAttribute?.("data-user-id") || row.querySelector?.("[data-user-id], [data-author-id]")?.getAttribute?.("data-author-id") || null;
+  const direct = row.getAttribute?.("data-user-id") || row.getAttribute?.("data-author-id") || row.querySelector?.("[data-user-id]")?.getAttribute?.("data-user-id") || row.querySelector?.("[data-author-id]")?.getAttribute?.("data-author-id") || null;
   const href = row.querySelector?.('a[href*="/users/"]')?.getAttribute?.("href") || row.querySelector?.('[href*="/users/"]')?.getAttribute?.("href") || "";
   const avatar = row.querySelector?.('img[src*="/avatars/"]')?.getAttribute?.("src") || "";
   const fromHref = href.match(/\/users\/(\d{5,})/)?.[1] || null;
-  const fromAvatar = avatar.match(/\/avatars\/(\d{5,})/)?.[1] || null;
-  const id = String(direct || fromHref || fromAvatar || "").trim();
+  const directId = /^\d{5,}$/.test(String(direct || "").trim()) ? String(direct).trim() : null;
+  const id = String(directId || fromHref || "").trim();
   if (!id || /^(null|undefined|unknown)$/i.test(id)) return null;
   return { authorId: id, avatarUrl: avatar };
 }
@@ -1038,12 +1203,13 @@ var BarklyAccess = class {
       getSelectedConversation: () => this.getSelectedConversation(),
       // The adapter deliberately avoids Discord Webpack/internal stores. If a
       // supported identity provider is added later it can be injected here.
-      getCurrentUserId: () => this.state.currentUserId || null,
+      getCurrentUserId: () => this.getCurrentUserId(),
       getConversationPath: () => window.location.pathname
     });
     this.collectionCoordinator = new CollectionCoordinator({
       adapter: this.historyAdapter,
       store: this.analyticsStore,
+      getCurrentUserId: () => this.getCurrentUserId(),
       onProgress: (event) => {
         this.renderStats();
         this.refreshFrequent();
@@ -1106,7 +1272,9 @@ var BarklyAccess = class {
     BdApi.DOM.addStyle(this.styleId, this.css());
   }
   createPanel() {
-    if (document.getElementById(this.panelId)) return;
+    const previousPanel = document.getElementById(this.panelId);
+    if (previousPanel && previousPanel === this.panel) return;
+    previousPanel?.remove();
     const p = document.createElement("aside");
     p.id = this.panelId;
     p.setAttribute("aria-label", "Barkly Access");
@@ -1161,7 +1329,6 @@ var BarklyAccess = class {
       else BdApi.UI.showToast("Sender identity setting saved locally.", { type: "success" });
       userId.value = this.state.currentUserId;
       this.save();
-      this.historyAdapter.getCurrentUserId = () => this.state.currentUserId || null;
       this.renderStats();
     });
     const controlSize = p.querySelector("#ba-control-size");
@@ -1195,6 +1362,10 @@ var BarklyAccess = class {
   }
   getSelectedConversation() {
     return getSelectedConversationId(window.location.pathname);
+  }
+  getCurrentUserId() {
+    const configured = String(this.state.currentUserId || "").trim();
+    return /^\d{15,20}$/.test(configured) ? configured : discoverCurrentUserId(document);
   }
   bindHistoryObserver() {
     if (!this.historyObserver) return;
@@ -1326,6 +1497,7 @@ var BarklyAccess = class {
       this.dashboard.querySelector("[data-dashboard-back]")?.focus();
       return;
     }
+    document.getElementById("ba-analytics-dashboard")?.remove();
     const view = document.createElement("section");
     view.id = "ba-analytics-dashboard";
     view.className = "ba-dashboard";
@@ -1418,7 +1590,7 @@ var BarklyAccess = class {
       if (!person) return { ...item, totals: { sent: 0, received: 0, unknown: 0 }, people: {}, daily: {}, dailySent: {}, dailyReceived: {}, dailyUnknown: {}, hourly: Array(24).fill(0) };
       return { ...item, totals: { sent: person.sent, received: person.received, unknown: person.unknown }, people: { [person.authorId]: person }, excludedAuthors: [], daily: person.daily, dailySent: person.dailySent, dailyReceived: person.dailyReceived, dailyUnknown: person.dailyUnknown, hourly: person.hourly };
     });
-    const summary = summarizeAnalytics({ version: all.version, conversations: Object.fromEntries(analysisScope.map((item) => [item.conversationId, item])) }, { since, until, search: view.querySelector('[data-filter="search"]').value, granularity: view.querySelector('[data-filter="group"]').value });
+    const summary = summarizeAnalytics({ version: all.version, conversations: Object.fromEntries(analysisScope.map((item) => [item.conversationId, item])) }, { since, until, search: view.querySelector('[data-filter="search"]').value, granularity: view.querySelector('[data-filter="group"]').value, currentUserId: this.getCurrentUserId() });
     const people = summary.people;
     const sort = view.querySelector('[data-filter="sort"]').value;
     people.sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : sort === "recent" ? (b.lastTimestamp || 0) - (a.lastTimestamp || 0) : b.total - a.total || a.name.localeCompare(b.name));
@@ -1444,29 +1616,29 @@ var BarklyAccess = class {
     const active = scope.filter((item) => this.collectionCoordinator.active.has(item.conversationId)).length;
     const complete = scope.filter((item) => item.coverage.complete).length;
     coverage.textContent = `Coverage is based on the visible UI only. ${scope.length} tracked conversation(s); ${active} collecting now; ${complete} marked complete by the source. Discord does not expose a definitive total-history count, so \u201Ccomplete\u201D is unavailable for this UI adapter. ${scope.reduce((n, item) => n + (item.coverage.recordsProcessed || 0), 0).toLocaleString()} unique message records have been processed. ${scope.reduce((n, item) => n + (item.coverage.encountered || 0), 0).toLocaleString()} records encountered in the latest saved runs; ${scope.reduce((n, item) => n + (item.coverage.duplicatesIgnored || 0), 0).toLocaleString()} duplicates ignored in those runs.`;
-    const currentUserId = String(this.state.currentUserId || "");
+    const currentUserId = String(this.getCurrentUserId() || "");
     const senderStats = scope.reduce((result, item) => {
       for (const person of Object.values(item.people)) {
+        if (person.authorId === "__unresolved_author__") continue;
         if (currentUserId && person.authorId === currentUserId) {
-          result.mine.sent += person.sent || 0;
-          result.mine.unknown += person.unknown || 0;
-        } else {
-          result.other.received += person.received || 0;
-          result.other.unknown += person.unknown || 0;
+          result.mine.sent += person.total || 0;
+        } else if (currentUserId) {
+          result.other.received += person.total || 0;
         }
       }
       return result;
-    }, { mine: { sent: 0, unknown: 0 }, other: { received: 0, unknown: 0 } });
+    }, { mine: { sent: 0 }, other: { received: 0 } });
     const myRoot = view.querySelector("[data-dashboard-my]"), otherRoot = view.querySelector("[data-dashboard-other]"), compareRoot = view.querySelector("[data-dashboard-compare]");
     if (!currentUserId) {
       myRoot.textContent = "Set your numeric Discord user ID in Barkly Access settings to separate and verify your sent messages.";
       otherRoot.textContent = "Set your numeric Discord user ID to isolate other participants. Unknown direction or sender records are never silently attributed.";
       compareRoot.textContent = "Comparison is unavailable until a verified current-user ID is set.";
     } else {
-      const mineCount = senderStats.mine.sent + senderStats.mine.unknown;
-      const otherCount = senderStats.other.received + senderStats.other.unknown;
-      myRoot.textContent = `${senderStats.mine.sent.toLocaleString()} reliably current-user sent messages${senderStats.mine.unknown ? `; ${senderStats.mine.unknown.toLocaleString()} unknown-direction records remain unattributed` : ""}.`;
-      otherRoot.textContent = `${senderStats.other.received.toLocaleString()} participant received messages${senderStats.other.unknown ? `; ${senderStats.other.unknown.toLocaleString()} unknown-sender or unknown-direction records remain unattributed` : ""}.`;
+      const unresolved = scope.reduce((n, item) => n + Object.entries(item.people).filter(([id]) => id === "__unresolved_author__").reduce((sum, [, person]) => sum + (person.total || 0), 0), 0);
+      const mineCount = senderStats.mine.sent;
+      const otherCount = senderStats.other.received;
+      myRoot.textContent = `${senderStats.mine.sent.toLocaleString()} reliably current-user sent messages${unresolved ? `; ${unresolved.toLocaleString()} unresolved sender records remain unattributed` : ""}.`;
+      otherRoot.textContent = `${senderStats.other.received.toLocaleString()} reliably other-participant received messages.`;
       compareRoot.textContent = `Current user: ${mineCount.toLocaleString()} \xB7 Other participants: ${otherCount.toLocaleString()} \xB7 Difference: ${Math.abs(mineCount - otherCount).toLocaleString()} messages.`;
     }
     this.fillTable(view.querySelector("[data-dashboard-activity]"), summary.activity.map((point) => [point.period, point.count]));
@@ -1651,7 +1823,8 @@ var BarklyAccess = class {
     list.replaceChildren();
     const contacts = buildFrequentContacts(this.analyticsStore.snapshot(), {
       search: this.panel.querySelector("#ba-frequent-search")?.value || "",
-      sort: this.panel.querySelector("#ba-frequent-sort")?.value || "messages"
+      sort: this.panel.querySelector("#ba-frequent-sort")?.value || "messages",
+      currentUserId: this.getCurrentUserId()
     });
     const status = this.panel.querySelector(".ba-frequent-status");
     if (!contacts.length) {

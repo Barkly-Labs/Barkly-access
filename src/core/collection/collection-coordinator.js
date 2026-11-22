@@ -3,9 +3,10 @@ import { classifyCollectionOutcome } from "./collection-state.js";
 
 /** Coordinates rendered-source batches without coupling collection to a UI. */
 export class CollectionCoordinator {
-  constructor({ adapter, store, onProgress = () => {} }) {
+  constructor({ adapter, store, getCurrentUserId = () => null, onProgress = () => {} }) {
     this.adapter = adapter;
     this.store = store;
+    this.getCurrentUserId = getCurrentUserId;
     this.onProgress = onProgress;
     this.active = new Map();
   }
@@ -75,6 +76,7 @@ export class CollectionCoordinator {
           getAvatarUrl: m => m.avatarUrl ?? m.avatar_url ?? "",
           getConversationId: m => m.conversationId ?? m.channel_id ?? m.channelId,
           getTimestamp: m => m.timestamp ?? m.createdAt ?? m.created_at,
+          getCurrentUserId: this.getCurrentUserId,
           getIsSelf: m => typeof m.isSelf === "boolean" ? m.isSelf : null,
         }).map(record => ({ ...record, conversationId }));
         const result = this.store.applyBatch(conversationId, normalized, { status: "partial", complete: batch.complete === true });

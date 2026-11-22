@@ -45,7 +45,7 @@ test("normalizer rejects missing stable identities and canonicalizes whitespace"
     { id: "2", authorId: "unknown" },
     { id: "3", authorId: "" },
   ]);
-  assert.deepEqual(normalized.map(record => record.authorId), ["123"]);
+  assert.deepEqual(normalized.map(record => record.authorId), ["123", "__unresolved_author__", "__unresolved_author__"]);
 });
 
 test("ignores malformed records", () => {
@@ -65,9 +65,10 @@ test("normalizer drops malformed records and accepts common export field names",
     getConversationId: m => m.channel,
     getTimestamp: m => m.created_at,
   });
-  assert.deepEqual(normalized, [{
-    messageId: "m1", authorId: "u1", authorName: "", authorUsername: "", conversationId: "c1", timestamp: null, isSelf: null,
-  }]);
+  assert.deepEqual(normalized, [
+    { messageId: "m1", authorId: "u1", authorName: "", authorUsername: "", conversationId: "c1", timestamp: null, isSelf: null },
+    { messageId: "missing-author", authorId: "__unresolved_author__", authorName: "", authorUsername: "", conversationId: null, timestamp: null, isSelf: null },
+  ]);
   assert.equal(JSON.stringify(normalized).includes("secret"), false);
 });
 
