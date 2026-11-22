@@ -1,30 +1,23 @@
-/* Frequent panel: black, pink, and neutral colors with explicit non-color labels. */
-#barkly-access-panel .ba-file-label{display:block;padding:9px 10px;margin:6px 0;background:#ff4fa3;color:#090909;border-radius:8px;font-weight:700;cursor:pointer;text-align:center}
-#barkly-access-panel #ba-frequent-file{display:block;width:100%;padding:7px;margin:6px 0 10px;background:#101010;color:#f1f1f1;border:1px solid #555;border-radius:8px}
-#barkly-access-panel .ba-import-status{color:#eee;background:#181818;border-left:3px solid #ff4fa3;padding:8px;margin:8px 0;font-size:12px}
+/* Frequent uses the persistent conversation store and exposes native route links. */
+#barkly-access-panel .ba-frequent-title{margin:8px 2px;color:#ff8bc5;font-size:18px}
+#barkly-access-panel .ba-frequent-controls{display:grid;grid-template-columns:1fr;gap:4px;margin:10px 0}
+#barkly-access-panel .ba-frequent-controls label{font-size:12px;font-weight:700;color:#f1e8ed;margin-top:4px}
+#barkly-access-panel #ba-frequent-search,#barkly-access-panel #ba-frequent-sort{display:block;width:100%;min-height:38px;padding:8px;background:#101010;color:#f1f1f1;border:1px solid #777;border-radius:8px}
+#barkly-access-panel .ba-frequent-status{color:#f1e8ed;background:#181318;border-left:3px solid #ff4fa3;padding:8px;margin:8px 0;font-size:12px;line-height:1.45}
+#barkly-access-panel .ba-frequent-list{list-style:none;padding:0;margin:8px 0;display:grid;gap:7px}
+#barkly-access-panel .ba-frequent-item{display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:start;gap:9px;padding:10px;background:#101010;border:1px solid #4c3a47;border-radius:9px}
+#barkly-access-panel .ba-contact-monogram{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#392533;color:#ffd2e7;font-weight:800;font-size:15px;object-fit:cover}
+#barkly-access-panel .ba-contact-content{min-width:0}
+#barkly-access-panel .ba-contact-title{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+#barkly-access-panel .ba-contact-link{color:#ff9bc9;font-weight:750;overflow-wrap:anywhere;text-decoration:underline;text-underline-offset:2px}
+#barkly-access-panel .ba-contact-link:hover{color:#ffd2e7}
+#barkly-access-panel .ba-contact-link:focus-visible{outline:3px solid #fff;outline-offset:3px;border-radius:2px}
+#barkly-access-panel .ba-contact-unavailable{color:#f5eef2;font-weight:750;overflow-wrap:anywhere}
+#barkly-access-panel .ba-contact-username{font-size:11px;color:#e3cbd8;overflow-wrap:anywhere}
+#barkly-access-panel .ba-contact-identity,#barkly-access-panel .ba-contact-meta,#barkly-access-panel .ba-contact-fallback{margin:3px 0 0;color:#d8cdd3;font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+#barkly-access-panel .ba-contact-fallback{grid-column:2 / -1;color:#ffd3a8}
+#barkly-access-panel .ba-contact-count{color:#fff;font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums}
+#barkly-access-panel .ba-frequent-empty{padding:12px;background:#181318;border:1px dashed #806879;border-radius:8px;color:#eee;line-height:1.5}
+#barkly-access-panel #ba-frequent-search:focus-visible,#barkly-access-panel #ba-frequent-sort:focus-visible{outline:3px solid #fff;outline-offset:2px}
 #barkly-access-panel .ba-secondary{background:#292929;color:#f1f1f1}
-#barkly-access-panel .ba-frequent-list{list-style:none;padding:0;margin:8px 0;display:grid;gap:6px}
-#barkly-access-panel .ba-frequent-item{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px;background:#101010;border:1px solid #444;border-radius:8px}
-#barkly-access-panel .ba-rank{display:grid;place-items:center;background:#ff4fa3;color:#090909;border-radius:8px;font-weight:800;height:26px}
-#barkly-access-panel .ba-frequent-name{overflow-wrap:anywhere;font-weight:600}
-#barkly-access-panel .ba-frequent-count{color:#eee;font-size:11px;white-space:nowrap}
-#barkly-access-panel .ba-file-label:focus-within,#barkly-access-panel input:focus-visible,#barkly-access-panel button:focus-visible{outline:3px solid #fff;outline-offset:3px}
-@media(prefers-reduced-motion:reduce){#barkly-access-panel *,#barkly-access-panel *::before,#barkly-access-panel *::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
-#barkly-access-panel .ba-tabs button{flex:1;min-width:0;font-size:12px;padding-inline:5px}
-#barkly-access-panel .ba-stats-title{color:#ff8bc5;font-size:18px;margin:12px 2px 6px}
-#barkly-access-panel .ba-stat-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:10px 0}
-#barkly-access-panel .ba-stat-card{display:grid;gap:3px;padding:8px;background:#151515;border:1px solid #444;border-radius:8px}
-#barkly-access-panel .ba-stat-card strong{font-size:18px;color:#fff}
-#barkly-access-panel .ba-stat-card span{font-size:11px;color:#ddd}
-#barkly-access-panel #ba-stats-search,#barkly-access-panel #ba-stats-range{width:100%;padding:8px;margin:4px 0 8px;color:#f1f1f1;background:#101010;border:1px solid #666;border-radius:7px}
-#barkly-access-panel .ba-collection-status{padding:8px;margin:8px 0;background:#181818;border-left:3px solid #ff4fa3;color:#eee;font-size:12px}
-#barkly-access-panel .ba-stats-people{list-style:none;padding:0;display:grid;gap:6px}
-#barkly-access-panel .ba-stats-person-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px}
-#barkly-access-panel .ba-stats-person-row button{margin:0;font-size:11px;padding:7px}
-#barkly-access-panel .ba-daily-chart{list-style:none;padding:0;display:grid;gap:5px}
-#barkly-access-panel .ba-daily-row{display:grid;grid-template-columns:76px minmax(12px,1fr) 30px;align-items:center;gap:6px;font-size:11px}
-#barkly-access-panel .ba-daily-bar{height:10px;min-width:2px;background:#ff4fa3;border-radius:4px}
-#barkly-access-panel .ba-person-detail{margin:8px 0;padding:8px;background:#171717;border:1px solid #444;border-radius:8px}
-#barkly-access-panel .ba-person-detail p{font-size:12px;color:#eee}
-#barkly-access-panel select:focus-visible,#barkly-access-panel summary:focus-visible{outline:3px solid #fff;outline-offset:3px}
-#barkly-access-panel [hidden]{display:none!important}
+@media(prefers-reduced-motion:reduce){#barkly-access-panel .ba-contact-link{scroll-behavior:auto!important;animation:none!important;transition:none!important}}

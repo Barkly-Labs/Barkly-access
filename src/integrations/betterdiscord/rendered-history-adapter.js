@@ -1,13 +1,17 @@
+import { getConversationHref } from "./conversation-selection.js";
+
 /**
  * Backfills only message rows currently exposed by Discord's visible interface.
  * It intentionally does not read Discord's private stores or call its APIs.
  */
 export class RenderedHistoryAdapter {
   constructor({ getSelectedConversation, getCurrentUserId, getDocument = () => document,
+    getConversationPath = () => globalThis.location?.pathname || "",
     wait = ms => new Promise(resolve => setTimeout(resolve, ms)), maxBatches = 250,
     stablePasses = 3, renderDelay = 450, scrollStepRatio = 0.72 }) {
     this.getSelectedConversation = getSelectedConversation;
     this.getCurrentUserId = getCurrentUserId;
+    this.getConversationPath = getConversationPath;
     this.getDocument = getDocument;
     this.wait = wait;
     this.maxBatches = maxBatches;
@@ -16,7 +20,7 @@ export class RenderedHistoryAdapter {
     this.scrollStepRatio = scrollStepRatio;
   }
 
-  async startScan({ conversationId }) {
+  async startScan({ conversationId, mode = "initial" }) {
     if (String(this.getSelectedConversation()) !== String(conversationId)) throw new Error("Conversation is no longer selected");
     const root = this.findMessageRoot();
     if (!root) throw new Error("The selected conversation has no rendered message list");
@@ -25,7 +29,7 @@ export class RenderedHistoryAdapter {
     const anchor = [...root.querySelectorAll('[class*="messageListItem"]')]
       .find(row => !rect || row.getBoundingClientRect?.().bottom > rect.top);
     this.scan = {
-      conversationId: String(conversationId), root, scroller,
+      conversationId: String(conversationId), mode: mode === "incremental" ? "incremental" : "initial", root, scroller,
       initialTop: Number(scroller.scrollTop) || 0,
       initialHeight: Number(scroller.scrollHeight) || Number(root.scrollHeight) || 0,
       anchorId: this.rowId(anchor),
@@ -34,6 +38,7 @@ export class RenderedHistoryAdapter {
       noProgress: 0, batches: 0, encountered: 0, uniqueSeen: new Set(),
       startedAt: Date.now(), stopReason: null,
     };
+    return { navigationPath: getConversationHref(this.getConversationPath?.(), conversationId) };
   }
 
   async getNextBatch({ conversationId, signal }) {
@@ -56,14 +61,27 @@ export class RenderedHistoryAdapter {
         || row.querySelector('a[href*="/users/"]')?.getAttribute("href")?.match(/\/users\/(\d+)/)?.[1]
         || row.querySelector('img[src*="/avatars/"]')?.getAttribute("src")?.match(/\/avatars\/(\d+)/)?.[1];
       if (!authorId) return [];
-      const authorName = row.querySelector('[class*="username"]')?.textContent?.trim() || "";
+      const avatarUrl = row.querySelector('img[src*="/avatars/"]')?.getAttribute("src") || "";
+      const nameNode = row.querySelector('[class*="username"]');
+      const authorName = nameNode?.textContent?.trim() || "";
+      const authorUsername = row.getAttribute("data-username") || row.getAttribute("data-user-name")
+        || nameNode?.getAttribute?.("data-username") || "";
       const time = row.querySelector("time[datetime]")?.getAttribute("datetime");
       const parsed = time ? Date.parse(time) : NaN;
-      return [{ messageId, authorId, authorName, timestamp: Number.isFinite(parsed) ? parsed : null,
+      return [{ messageId, authorId, authorName, authorUsername, timestamp: Number.isFinite(parsed) ? parsed : null,
+        avatarUrl: avatarUrl,
         isSelf: selfId == null ? null : String(authorId) === String(selfId) }];
     });
     scan.encountered += records.length;
     for (const record of records) scan.uniqueSeen.add(record.messageId);
+
+    if (scan.mode === "incremental") {
+      scan.batches++;
+      return { records, done: true, complete: false, stopReason: "incremental-visible-batch",
+        source: "rendered-discord-ui",
+        progress: { batches: scan.batches, encountered: records.length, uniqueInScan: scan.uniqueSeen.size,
+          atOldestVisibleEdge: false, mode: "incremental" } };
+    }
 
     const beforeTop = Number(scroller.scrollTop) || 0;
     const beforeSignature = this.messageSignature(root);

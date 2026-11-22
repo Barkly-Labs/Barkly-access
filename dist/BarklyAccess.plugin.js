@@ -29,100 +29,9 @@ __export(BarklyAccess_plugin_exports, {
 });
 module.exports = __toCommonJS(BarklyAccess_plugin_exports);
 
-// src/core/history/aggregation-engine.js
-var AggregationEngine = class {
-  constructor({ dedupeLimit = 1e5 } = {}) {
-    this.counts = /* @__PURE__ */ new Map();
-    this.processedIds = /* @__PURE__ */ new Set();
-    this.dedupeLimit = dedupeLimit;
-    this.totalProcessed = 0;
-    this.duplicatesSkipped = 0;
-  }
-  processBatch(messages) {
-    if (!Array.isArray(messages)) {
-      throw new TypeError("messages must be an array");
-    }
-    let added = 0;
-    for (const message of messages) {
-      if (!message || typeof message !== "object") continue;
-      const { messageId, authorId } = message;
-      if (messageId == null || authorId == null) continue;
-      const id = String(messageId);
-      const author = String(authorId);
-      if (!id || !author) continue;
-      if (this.processedIds.has(id)) {
-        this.duplicatesSkipped++;
-        continue;
-      }
-      if (this.dedupeLimit > 0 && this.processedIds.size >= this.dedupeLimit) {
-        const oldest = this.processedIds.values().next().value;
-        this.processedIds.delete(oldest);
-      } else if (this.dedupeLimit <= 0) {
-        this.counts.set(author, (this.counts.get(author) || 0) + 1);
-        this.totalProcessed++;
-        added++;
-        continue;
-      }
-      this.processedIds.add(id);
-      this.counts.set(author, (this.counts.get(author) || 0) + 1);
-      this.totalProcessed++;
-      added++;
-    }
-    return { added, duplicatesSkipped: this.duplicatesSkipped };
-  }
-  getRanking() {
-    return [...this.counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([userId, count2], index) => ({ rank: index + 1, userId, count: count2 }));
-  }
-  getStats() {
-    return {
-      totalProcessed: this.totalProcessed,
-      duplicatesSkipped: this.duplicatesSkipped,
-      uniqueAuthors: this.counts.size,
-      dedupeTracked: this.processedIds.size
-    };
-  }
-  reset() {
-    this.counts.clear();
-    this.processedIds.clear();
-    this.totalProcessed = 0;
-    this.duplicatesSkipped = 0;
-  }
-};
-
-// src/core/history/normalizer.js
-function normalizeMessages(sourceMessages, {
-  getMessageId = (m) => m.id ?? m.messageId,
-  getAuthorId = (m) => m.author?.id ?? m.authorId,
-  getAuthorName = (m) => m.author?.username ?? m.authorName ?? m.username ?? "",
-  getConversationId = (m) => m.channel_id ?? m.conversationId ?? m.channelId,
-  getTimestamp = (m) => m.timestamp ?? m.createdAt,
-  getIsSelf = (m) => typeof m.isSelf === "boolean" ? m.isSelf : null
-} = {}) {
-  if (!Array.isArray(sourceMessages)) {
-    throw new TypeError("sourceMessages must be an array");
-  }
-  return sourceMessages.flatMap((m) => {
-    if (!m || typeof m !== "object") return [];
-    const messageId = getMessageId(m);
-    const authorId = getAuthorId(m);
-    if (messageId == null || authorId == null) return [];
-    const rawTimestamp = getTimestamp(m);
-    let numericTimestamp = rawTimestamp == null ? null : typeof rawTimestamp === "number" ? rawTimestamp : Date.parse(rawTimestamp);
-    if (typeof rawTimestamp === "number" && numericTimestamp > 0 && numericTimestamp < 1e12) numericTimestamp *= 1e3;
-    return [{
-      messageId: String(messageId),
-      authorId: String(authorId),
-      authorName: String(getAuthorName(m) ?? "").slice(0, 100),
-      conversationId: getConversationId(m) == null ? null : String(getConversationId(m)),
-      timestamp: Number.isFinite(numericTimestamp) ? numericTimestamp : null,
-      isSelf: typeof getIsSelf(m) === "boolean" ? getIsSelf(m) : null
-    }];
-  });
-}
-
 // src/core/privacy/data-policy.js
 var ANALYTICS_SCHEMA_VERSION = 1;
-var MAX_DEDUPE_KEYS_PER_CONVERSATION = 25e4;
+var MAX_DEDUPE_KEYS_PER_CONVERSATION = Number.MAX_SAFE_INTEGER;
 function fingerprintMessageId(messageId) {
   let hash = 0xcbf29ce484222325n;
   for (const char of String(messageId)) {
@@ -140,9 +49,30 @@ function sanitizeAnalyticsRecord(record) {
     messageId: String(messageId),
     authorId: String(authorId),
     authorName: typeof record.authorName === "string" ? record.authorName.slice(0, 100) : "",
+    authorUsername: typeof record.authorUsername === "string" ? record.authorUsername.slice(0, 100) : "",
+    avatarUrl: typeof record.avatarUrl === "string" && /^https:\/\/[^\s]{1,500}$/.test(record.avatarUrl) ? record.avatarUrl : "",
     timestamp: Number.isFinite(timestamp) ? timestamp : null,
     isSelf: typeof record.isSelf === "boolean" ? record.isSelf : null
   };
+}
+
+// src/core/collection/collection-state.js
+var INITIAL_COLLECTION_STATES = Object.freeze([
+  "never_collected",
+  "initial_in_progress",
+  "initial_completed",
+  "interrupted",
+  "failed",
+  "incomplete"
+]);
+function collectionModeFor(collection) {
+  return collection?.state === "initial_completed" ? "incremental" : "initial";
+}
+function classifyCollectionOutcome({ mode = "initial", stopReason = null, complete = false, interrupted = false, failed = false } = {}) {
+  if (failed) return "failed";
+  if (interrupted || ["cancelled", "interrupted", "conversation-view-unavailable"].includes(stopReason)) return "interrupted";
+  if (complete || stopReason === "oldest-visible-edge-stable" || mode === "incremental" && stopReason === "incremental-visible-batch") return "completed";
+  return "incomplete";
 }
 
 // src/core/storage/historical-store.js
@@ -177,6 +107,8 @@ var HistoricalStore = class {
         people[String(personId)] = {
           authorId: String(personId),
           name: safeString(person.name, 100) || String(personId),
+          username: safeString(person.username, 100),
+          avatarUrl: safeAvatar(person.avatarUrl),
           sent: count(person.sent),
           received: count(person.received),
           unknown: count(person.unknown),
@@ -195,6 +127,8 @@ var HistoricalStore = class {
       }
       conversations[String(id)] = {
         conversationId: String(id),
+        navigationPath: validConversationPath(raw.navigationPath, id),
+        collection: sanitizeCollection(raw.collection),
         status: validStatus(raw.status) ? raw.status : "partial",
         totals: { sent: count(raw.totals?.sent), received: count(raw.totals?.received), unknown: count(raw.totals?.unknown) },
         people,
@@ -241,6 +175,8 @@ var HistoricalStore = class {
     entry.updatedAt = this.now();
     if (details.error) entry.error = String(details.error).slice(0, 240);
     if (details.coverage) entry.coverage = { ...entry.coverage, ...details.coverage };
+    if (details.navigationPath) entry.navigationPath = validConversationPath(details.navigationPath, id) || entry.navigationPath || null;
+    if (details.collection) entry.collection = sanitizeCollection({ ...entry.collection, ...details.collection });
     state.conversations[id] = entry;
     this.writeState(state);
     return structuredClone(entry);
@@ -290,6 +226,16 @@ var HistoricalStore = class {
     delete state.conversations[String(conversationId)];
     this.writeState(state);
   }
+  markCollection(conversationId, changes = {}) {
+    const state = this.snapshot();
+    const id = String(conversationId);
+    const entry = state.conversations[id] || this.newConversation(id);
+    entry.collection = sanitizeCollection({ ...entry.collection, ...changes });
+    entry.updatedAt = this.now();
+    state.conversations[id] = entry;
+    this.writeState(state);
+    return structuredClone(entry.collection);
+  }
   setAuthorExcluded(conversationId, authorId, excluded) {
     const state = this.snapshot();
     const entry = state.conversations[String(conversationId)];
@@ -317,6 +263,8 @@ var HistoricalStore = class {
   newConversation(id) {
     return {
       conversationId: id,
+      navigationPath: null,
+      collection: sanitizeCollection(null),
       status: "ready",
       totals: { sent: 0, received: 0, unknown: 0 },
       people: {},
@@ -339,6 +287,8 @@ var HistoricalStore = class {
     const person = entry.people[authorId] || {
       authorId,
       name: record.authorName || authorId,
+      username: record.authorUsername || "",
+      avatarUrl: "",
       sent: 0,
       received: 0,
       unknown: 0,
@@ -355,6 +305,8 @@ var HistoricalStore = class {
       hourlyUnknown: Array(24).fill(0)
     };
     if (record.authorName) person.name = record.authorName;
+    if (record.authorUsername) person.username = record.authorUsername;
+    if (record.avatarUrl) person.avatarUrl = record.avatarUrl;
     const direction = record.isSelf === true ? "sent" : record.isSelf === false ? "received" : "unknown";
     person[direction]++;
     person.total++;
@@ -385,6 +337,29 @@ var HistoricalStore = class {
 var count = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 var finiteOrNull = (value) => Number.isFinite(Number(value)) && value != null ? Number(value) : null;
 var safeString = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
+var safeAvatar = (value) => typeof value === "string" && /^https:\/\/[^\s]{1,500}$/.test(value) ? value : "";
+var validConversationPath = (path, conversationId) => {
+  if (typeof path !== "string") return null;
+  const match = path.match(/^\/channels\/(?:@me|\d+)\/(\d+)\/?$/);
+  return match && match[1] === String(conversationId) ? path.replace(/\/$/, "") : null;
+};
+var sanitizeCollection = (raw) => {
+  const state = INITIAL_COLLECTION_STATES.includes(raw?.state) ? raw.state : "never_collected";
+  const operation = ["idle", "collecting", "completed", "incomplete", "interrupted", "failed"].includes(raw?.lastOperationStatus) ? raw.lastOperationStatus : "idle";
+  return {
+    state,
+    initialStartedAt: finiteOrNull(raw?.initialStartedAt),
+    initialCompletedAt: finiteOrNull(raw?.initialCompletedAt),
+    lastCollectionAt: finiteOrNull(raw?.lastCollectionAt),
+    lastSuccessfulUpdateAt: finiteOrNull(raw?.lastSuccessfulUpdateAt),
+    lastOperationStatus: operation,
+    lastMode: raw?.lastMode === "incremental" ? "incremental" : raw?.lastMode === "initial" ? "initial" : null,
+    attempts: count(raw?.attempts),
+    interrupted: raw?.interrupted === true,
+    stopReason: safeString(raw?.stopReason, 80),
+    error: safeString(raw?.error, 240)
+  };
+};
 var stringArray = (value, max) => Array.isArray(value) ? value.filter((x) => typeof x === "string").slice(-max) : [];
 var countMap = (value) => value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([key]) => /^\d{4}-\d{2}-\d{2}$/.test(key)).map(([key, n]) => [key, count(n)])) : {};
 var countArray = (value) => Array.isArray(value) ? Array.from({ length: 24 }, (_, i) => count(value[i])) : Array(24).fill(0);
@@ -398,6 +373,42 @@ function maxDate(current, values) {
   return valid.length ? Math.max(current ?? -Infinity, ...valid) : current;
 }
 
+// src/core/history/normalizer.js
+function normalizeMessages(sourceMessages, {
+  getMessageId = (m) => m.id ?? m.messageId,
+  getAuthorId = (m) => m.author?.id ?? m.authorId,
+  getAuthorName = (m) => m.author?.username ?? m.authorName ?? m.username ?? "",
+  getAuthorUsername = (m) => m.authorUsername ?? m.username ?? m.author?.username ?? "",
+  getAvatarUrl = (m) => m.avatarUrl ?? m.avatar_url ?? "",
+  getConversationId = (m) => m.channel_id ?? m.conversationId ?? m.channelId,
+  getTimestamp = (m) => m.timestamp ?? m.createdAt,
+  getIsSelf = (m) => typeof m.isSelf === "boolean" ? m.isSelf : null
+} = {}) {
+  if (!Array.isArray(sourceMessages)) {
+    throw new TypeError("sourceMessages must be an array");
+  }
+  return sourceMessages.flatMap((m) => {
+    if (!m || typeof m !== "object") return [];
+    const messageId = getMessageId(m);
+    const authorId = getAuthorId(m);
+    if (messageId == null || authorId == null) return [];
+    const rawTimestamp = getTimestamp(m);
+    let numericTimestamp = rawTimestamp == null ? null : typeof rawTimestamp === "number" ? rawTimestamp : Date.parse(rawTimestamp);
+    if (typeof rawTimestamp === "number" && numericTimestamp > 0 && numericTimestamp < 1e12) numericTimestamp *= 1e3;
+    const avatarUrl = String(getAvatarUrl(m) ?? "").slice(0, 500);
+    return [{
+      messageId: String(messageId),
+      authorId: String(authorId),
+      authorName: String(getAuthorName(m) ?? "").slice(0, 100),
+      authorUsername: String(getAuthorUsername(m) ?? "").slice(0, 100),
+      ...avatarUrl ? { avatarUrl } : {},
+      conversationId: getConversationId(m) == null ? null : String(getConversationId(m)),
+      timestamp: Number.isFinite(numericTimestamp) ? numericTimestamp : null,
+      isSelf: typeof getIsSelf(m) === "boolean" ? getIsSelf(m) : null
+    }];
+  });
+}
+
 // src/core/collection/collection-coordinator.js
 var CollectionCoordinator = class {
   constructor({ adapter, store, onProgress = () => {
@@ -407,34 +418,56 @@ var CollectionCoordinator = class {
     this.onProgress = onProgress;
     this.active = /* @__PURE__ */ new Map();
   }
-  collect(conversationId) {
+  collect(conversationId, { mode = "initial" } = {}) {
     const id = String(conversationId);
+    const scanMode = mode === "incremental" ? "incremental" : "initial";
     const sameConversation = this.active.get(id);
     if (sameConversation) {
-      return sameConversation.controller.signal.aborted ? sameConversation.promise.then(() => this.collect(id)) : sameConversation.promise;
+      return sameConversation.controller.signal.aborted ? sameConversation.promise.then(() => this.collect(id, { mode: scanMode })) : sameConversation.promise;
     }
     const other = this.active.values().next().value;
     if (other) {
       other.controller.abort();
-      return other.promise.then(() => this.collect(id));
+      return other.promise.then(() => this.collect(id, { mode: scanMode }));
     }
     const controller = new AbortController();
-    const job = { controller, promise: null };
-    job.promise = this.run(id, controller.signal).finally(() => this.active.delete(id));
+    const job = { controller, mode: scanMode, promise: null };
+    job.promise = this.run(id, controller.signal, scanMode).finally(() => this.active.delete(id));
     this.active.set(id, job);
     return job.promise;
   }
-  async run(conversationId, signal) {
+  emit(event) {
+    try {
+      this.onProgress(event);
+    } catch {
+    }
+  }
+  async run(conversationId, signal, mode) {
     let processed = 0;
     let duplicates = 0;
     let encountered = 0;
     let batches = 0;
     const startedAt = Date.now();
+    const previous = this.store.getConversation(conversationId)?.collection || {};
+    const initialAttempt = mode === "initial";
     try {
+      this.store.markCollection(conversationId, {
+        state: initialAttempt ? "initial_in_progress" : previous.state || "initial_completed",
+        initialStartedAt: initialAttempt ? previous.initialStartedAt || startedAt : previous.initialStartedAt,
+        lastCollectionAt: startedAt,
+        lastOperationStatus: "collecting",
+        lastMode: mode,
+        attempts: initialAttempt ? (previous.attempts || 0) + 1 : previous.attempts || 0,
+        interrupted: false,
+        stopReason: "",
+        error: ""
+      });
       this.store.markStatus(conversationId, "collecting", { coverage: { startedAt, interrupted: false, stopReason: null, encountered: 0, duplicatesIgnored: 0, batches: 0 } });
-      await this.adapter.startScan({ conversationId, signal });
+      this.emit({ conversationId, mode, phase: "start", status: "collecting", processed, duplicates, encountered, batches });
+      const scanContext = await this.adapter.startScan({ conversationId, signal, mode });
+      if (scanContext?.navigationPath) this.store.markStatus(conversationId, "collecting", { navigationPath: scanContext.navigationPath });
       while (!signal.aborted) {
-        const batch = await this.adapter.getNextBatch({ conversationId, signal });
+        const batch = await this.adapter.getNextBatch({ conversationId, signal, mode });
         if (signal.aborted) break;
         if (!batch || !Array.isArray(batch.records)) throw new Error("Source returned an invalid batch");
         batches++;
@@ -444,6 +477,8 @@ var CollectionCoordinator = class {
           getMessageId: (m) => m.messageId ?? m.id ?? m.message_id,
           getAuthorId: (m) => m.authorId ?? m.author_id ?? m.user_id ?? m.author?.id ?? (typeof m.author === "string" ? m.author : null),
           getAuthorName: (m) => m.authorName ?? m.author?.username ?? m.author?.name ?? m.username ?? (typeof m.author === "string" ? m.author : ""),
+          getAuthorUsername: (m) => m.authorUsername ?? m.username ?? m.author?.username ?? "",
+          getAvatarUrl: (m) => m.avatarUrl ?? m.avatar_url ?? "",
           getConversationId: (m) => m.conversationId ?? m.channel_id ?? m.channelId,
           getTimestamp: (m) => m.timestamp ?? m.createdAt ?? m.created_at,
           getIsSelf: (m) => typeof m.isSelf === "boolean" ? m.isSelf : null
@@ -451,7 +486,6 @@ var CollectionCoordinator = class {
         const result = this.store.applyBatch(conversationId, normalized, { status: "partial", complete: batch.complete === true });
         processed += result.added;
         duplicates += result.duplicates;
-        const state = batch.complete ? "completed" : batch.done ? "partial" : "collecting";
         const collection = {
           source: batch.source || "authorized-adapter",
           startedAt,
@@ -462,41 +496,69 @@ var CollectionCoordinator = class {
           stopReason: batch.stopReason || null,
           interrupted: false
         };
-        this.store.markStatus(conversationId, state, { coverage: collection });
-        try {
-          this.onProgress({ conversationId, status: state, processed, duplicates, encountered, batches, progress: batch.progress || null });
-        } catch {
-        }
-        if (batch.done) return { status: state, processed, duplicates, encountered, batches, stopReason: batch.stopReason || null };
+        this.store.markStatus(conversationId, batch.done ? "partial" : "collecting", { coverage: collection });
+        const progress = {
+          conversationId,
+          mode,
+          phase: batch.done ? "finishing" : "progress",
+          status: batch.done ? "partial" : "collecting",
+          processed,
+          duplicates,
+          encountered,
+          batches,
+          progress: batch.progress || null,
+          stopReason: batch.stopReason || null
+        };
+        this.emit(progress);
+        if (!batch.done) continue;
+        const outcome = classifyCollectionOutcome({ mode, stopReason: batch.stopReason, complete: batch.complete === true });
+        this.persistOutcome(conversationId, { mode, outcome, startedAt, stopReason: batch.stopReason || "unknown", error: "" });
+        const resultStatus = outcome === "interrupted" ? "cancelled" : outcome === "failed" ? "failed" : batch.complete ? "completed" : "partial";
+        this.store.markStatus(conversationId, resultStatus, { coverage: { ...collection, interrupted: outcome === "interrupted" } });
+        this.emit({ ...progress, phase: "finish", status: resultStatus, collectionState: outcome, durationMs: Date.now() - startedAt });
+        return { status: resultStatus, collectionState: outcome, mode, processed, duplicates, encountered, batches, stopReason: batch.stopReason || null };
       }
       await this.adapter.cancelScan?.({ conversationId });
-      let entry = null;
-      try {
-        entry = this.store.markStatus(conversationId, "cancelled", { coverage: { startedAt, durationMs: Date.now() - startedAt, encountered, duplicatesIgnored: duplicates, batches, interrupted: true, stopReason: "cancelled" } });
-      } catch {
-      }
-      try {
-        this.onProgress({ conversationId, status: "cancelled", processed, duplicates, encountered, batches });
-      } catch {
-      }
-      return { status: "cancelled", processed, duplicates, encountered, batches, conversation: entry };
+      this.persistOutcome(conversationId, { mode, outcome: "interrupted", startedAt, stopReason: "cancelled", error: "" });
+      const entry = this.store.markStatus(conversationId, "cancelled", { coverage: { startedAt, durationMs: Date.now() - startedAt, encountered, duplicatesIgnored: duplicates, batches, interrupted: true, stopReason: "cancelled" } });
+      this.emit({ conversationId, mode, phase: "finish", status: "cancelled", collectionState: "interrupted", processed, duplicates, encountered, batches, stopReason: "cancelled" });
+      return { status: "cancelled", collectionState: "interrupted", mode, processed, duplicates, encountered, batches, conversation: entry };
     } catch (error) {
       const message = error?.message || "Collection failed";
+      try {
+        this.persistOutcome(conversationId, { mode, outcome: "failed", startedAt, stopReason: "error", error: message });
+      } catch {
+      }
       try {
         this.store.markStatus(conversationId, "failed", { error: message, coverage: { startedAt, durationMs: Date.now() - startedAt, encountered, duplicatesIgnored: duplicates, batches, interrupted: true, stopReason: "error" } });
       } catch {
       }
-      try {
-        this.onProgress({ conversationId, status: "failed", processed, error: message });
-      } catch {
-      }
-      return { status: "failed", processed, duplicates, encountered, batches, error: message };
+      this.emit({ conversationId, mode, phase: "finish", status: "failed", collectionState: "failed", processed, duplicates, encountered, batches, error: message });
+      return { status: "failed", collectionState: "failed", mode, processed, duplicates, encountered, batches, error: message };
     } finally {
       try {
         await this.adapter.dispose?.({ conversationId });
       } catch {
       }
     }
+  }
+  persistOutcome(conversationId, { mode, outcome, startedAt, stopReason, error }) {
+    const previous = this.store.getConversation(conversationId)?.collection || {};
+    const successful = outcome === "completed";
+    const collectionState = mode === "initial" ? outcome === "completed" ? "initial_completed" : outcome : previous.state === "initial_completed" ? "initial_completed" : previous.state || "never_collected";
+    this.store.markCollection(conversationId, {
+      state: collectionState,
+      initialStartedAt: previous.initialStartedAt || (mode === "initial" ? startedAt : null),
+      initialCompletedAt: mode === "initial" && successful ? Date.now() : previous.initialCompletedAt,
+      lastCollectionAt: startedAt,
+      lastSuccessfulUpdateAt: successful ? Date.now() : previous.lastSuccessfulUpdateAt,
+      lastOperationStatus: outcome,
+      lastMode: mode,
+      attempts: previous.attempts || 0,
+      interrupted: outcome === "interrupted",
+      stopReason,
+      error
+    });
   }
   async cancel(conversationId) {
     const job = this.active.get(String(conversationId));
@@ -603,12 +665,55 @@ function summarizeAnalytics(snapshot, { since = null, until = null, search = "",
   };
 }
 
+// src/integrations/betterdiscord/conversation-selection.js
+function getSelectedConversationId(pathname) {
+  return String(pathname || "").match(/\/channels\/(?:@me|\d+)\/(\d+)/)?.[1] || null;
+}
+function getConversationHref(pathname, conversationId) {
+  const match = String(pathname || "").match(/^\/channels\/(?:@me|\d+)\/(\d+)\/?$/);
+  if (!match || String(match[1]) !== String(conversationId)) return null;
+  return `/channels/${String(pathname).match(/^\/channels\/(@me|\d+)\//)[1]}/${match[1]}`;
+}
+
+// src/core/frequent/contact-index.js
+function buildFrequentContacts(snapshot, { search = "", sort = "messages" } = {}) {
+  const query = String(search).trim().toLocaleLowerCase();
+  const contacts = /* @__PURE__ */ new Map();
+  for (const conversation of Object.values(snapshot?.conversations || {})) {
+    for (const [authorId, person] of Object.entries(conversation.people || {})) {
+      const total = Number.isFinite(person.total) ? person.total : (person.sent || 0) + (person.received || 0) + (person.unknown || 0);
+      if (total <= 0) continue;
+      const key = `${conversation.conversationId}\0${authorId}`;
+      const contact = {
+        key,
+        authorId: String(authorId),
+        conversationId: String(conversation.conversationId),
+        displayName: person.name || String(authorId),
+        username: person.username || "",
+        avatarUrl: person.avatarUrl || "",
+        messageCount: total,
+        lastTimestamp: person.lastTimestamp || null,
+        conversationStatus: conversation.status,
+        href: getConversationHref(conversation.navigationPath, conversation.conversationId)
+      };
+      const haystack = `${contact.displayName} ${contact.username} ${contact.authorId} ${contact.conversationId}`.toLocaleLowerCase();
+      if (!query || haystack.includes(query)) contacts.set(key, contact);
+    }
+  }
+  const result = [...contacts.values()];
+  if (sort === "recent") result.sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0) || a.displayName.localeCompare(b.displayName));
+  else if (sort === "name") result.sort((a, b) => a.displayName.localeCompare(b.displayName) || a.authorId.localeCompare(b.authorId));
+  else result.sort((a, b) => b.messageCount - a.messageCount || a.displayName.localeCompare(b.displayName));
+  return result;
+}
+
 // src/integrations/betterdiscord/rendered-history-adapter.js
 var RenderedHistoryAdapter = class {
   constructor({
     getSelectedConversation,
     getCurrentUserId,
     getDocument = () => document,
+    getConversationPath = () => globalThis.location?.pathname || "",
     wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     maxBatches = 250,
     stablePasses = 3,
@@ -617,6 +722,7 @@ var RenderedHistoryAdapter = class {
   }) {
     this.getSelectedConversation = getSelectedConversation;
     this.getCurrentUserId = getCurrentUserId;
+    this.getConversationPath = getConversationPath;
     this.getDocument = getDocument;
     this.wait = wait;
     this.maxBatches = maxBatches;
@@ -624,7 +730,7 @@ var RenderedHistoryAdapter = class {
     this.renderDelay = renderDelay;
     this.scrollStepRatio = scrollStepRatio;
   }
-  async startScan({ conversationId }) {
+  async startScan({ conversationId, mode = "initial" }) {
     if (String(this.getSelectedConversation()) !== String(conversationId)) throw new Error("Conversation is no longer selected");
     const root = this.findMessageRoot();
     if (!root) throw new Error("The selected conversation has no rendered message list");
@@ -633,6 +739,7 @@ var RenderedHistoryAdapter = class {
     const anchor = [...root.querySelectorAll('[class*="messageListItem"]')].find((row) => !rect || row.getBoundingClientRect?.().bottom > rect.top);
     this.scan = {
       conversationId: String(conversationId),
+      mode: mode === "incremental" ? "incremental" : "initial",
       root,
       scroller,
       initialTop: Number(scroller.scrollTop) || 0,
@@ -648,6 +755,7 @@ var RenderedHistoryAdapter = class {
       startedAt: Date.now(),
       stopReason: null
     };
+    return { navigationPath: getConversationHref(this.getConversationPath?.(), conversationId) };
   }
   async getNextBatch({ conversationId, signal }) {
     const scan = this.scan;
@@ -666,19 +774,41 @@ var RenderedHistoryAdapter = class {
       if (!messageId) return [];
       const authorId = row.getAttribute("data-user-id") || row.querySelector('a[href*="/users/"]')?.getAttribute("href")?.match(/\/users\/(\d+)/)?.[1] || row.querySelector('img[src*="/avatars/"]')?.getAttribute("src")?.match(/\/avatars\/(\d+)/)?.[1];
       if (!authorId) return [];
-      const authorName = row.querySelector('[class*="username"]')?.textContent?.trim() || "";
+      const avatarUrl = row.querySelector('img[src*="/avatars/"]')?.getAttribute("src") || "";
+      const nameNode = row.querySelector('[class*="username"]');
+      const authorName = nameNode?.textContent?.trim() || "";
+      const authorUsername = row.getAttribute("data-username") || row.getAttribute("data-user-name") || nameNode?.getAttribute?.("data-username") || "";
       const time = row.querySelector("time[datetime]")?.getAttribute("datetime");
       const parsed = time ? Date.parse(time) : NaN;
       return [{
         messageId,
         authorId,
         authorName,
+        authorUsername,
         timestamp: Number.isFinite(parsed) ? parsed : null,
+        avatarUrl,
         isSelf: selfId == null ? null : String(authorId) === String(selfId)
       }];
     });
     scan.encountered += records.length;
     for (const record of records) scan.uniqueSeen.add(record.messageId);
+    if (scan.mode === "incremental") {
+      scan.batches++;
+      return {
+        records,
+        done: true,
+        complete: false,
+        stopReason: "incremental-visible-batch",
+        source: "rendered-discord-ui",
+        progress: {
+          batches: scan.batches,
+          encountered: records.length,
+          uniqueInScan: scan.uniqueSeen.size,
+          atOldestVisibleEdge: false,
+          mode: "incremental"
+        }
+      };
+    }
     const beforeTop = Number(scroller.scrollTop) || 0;
     const beforeSignature = this.messageSignature(root);
     const beforeHeight = Number(scroller.scrollHeight) || Number(root.scrollHeight) || 0;
@@ -776,13 +906,19 @@ var RenderedHistoryAdapter = class {
   }
 };
 
-// src/integrations/betterdiscord/conversation-selection.js
-function getSelectedConversationId(pathname) {
-  return String(pathname || "").match(/\/channels\/(?:@me|\d+)\/(\d+)/)?.[1] || null;
+// src/integrations/betterdiscord/frequent-contact-link.js
+function createDiscordConversationLink(document2, contact) {
+  if (!contact?.href) return null;
+  const link = document2.createElement("a");
+  link.className = "ba-contact-link";
+  link.href = contact.href;
+  link.setAttribute("aria-label", `Open Discord conversation with ${contact.displayName}, ${contact.messageCount.toLocaleString()} collected messages`);
+  link.textContent = contact.displayName;
+  return link;
 }
 
 // src/styles/frequent.css
-var frequent_default = "/* Frequent panel: black, pink, and neutral colors with explicit non-color labels. */\n#barkly-access-panel .ba-file-label{display:block;padding:9px 10px;margin:6px 0;background:#ff4fa3;color:#090909;border-radius:8px;font-weight:700;cursor:pointer;text-align:center}\n#barkly-access-panel #ba-frequent-file{display:block;width:100%;padding:7px;margin:6px 0 10px;background:#101010;color:#f1f1f1;border:1px solid #555;border-radius:8px}\n#barkly-access-panel .ba-import-status{color:#eee;background:#181818;border-left:3px solid #ff4fa3;padding:8px;margin:8px 0;font-size:12px}\n#barkly-access-panel .ba-secondary{background:#292929;color:#f1f1f1}\n#barkly-access-panel .ba-frequent-list{list-style:none;padding:0;margin:8px 0;display:grid;gap:6px}\n#barkly-access-panel .ba-frequent-item{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px;background:#101010;border:1px solid #444;border-radius:8px}\n#barkly-access-panel .ba-rank{display:grid;place-items:center;background:#ff4fa3;color:#090909;border-radius:8px;font-weight:800;height:26px}\n#barkly-access-panel .ba-frequent-name{overflow-wrap:anywhere;font-weight:600}\n#barkly-access-panel .ba-frequent-count{color:#eee;font-size:11px;white-space:nowrap}\n#barkly-access-panel .ba-file-label:focus-within,#barkly-access-panel input:focus-visible,#barkly-access-panel button:focus-visible{outline:3px solid #fff;outline-offset:3px}\n@media(prefers-reduced-motion:reduce){#barkly-access-panel *,#barkly-access-panel *::before,#barkly-access-panel *::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}\n#barkly-access-panel .ba-tabs button{flex:1;min-width:0;font-size:12px;padding-inline:5px}\n#barkly-access-panel .ba-stats-title{color:#ff8bc5;font-size:18px;margin:12px 2px 6px}\n#barkly-access-panel .ba-stat-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:10px 0}\n#barkly-access-panel .ba-stat-card{display:grid;gap:3px;padding:8px;background:#151515;border:1px solid #444;border-radius:8px}\n#barkly-access-panel .ba-stat-card strong{font-size:18px;color:#fff}\n#barkly-access-panel .ba-stat-card span{font-size:11px;color:#ddd}\n#barkly-access-panel #ba-stats-search,#barkly-access-panel #ba-stats-range{width:100%;padding:8px;margin:4px 0 8px;color:#f1f1f1;background:#101010;border:1px solid #666;border-radius:7px}\n#barkly-access-panel .ba-collection-status{padding:8px;margin:8px 0;background:#181818;border-left:3px solid #ff4fa3;color:#eee;font-size:12px}\n#barkly-access-panel .ba-stats-people{list-style:none;padding:0;display:grid;gap:6px}\n#barkly-access-panel .ba-stats-person-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px}\n#barkly-access-panel .ba-stats-person-row button{margin:0;font-size:11px;padding:7px}\n#barkly-access-panel .ba-daily-chart{list-style:none;padding:0;display:grid;gap:5px}\n#barkly-access-panel .ba-daily-row{display:grid;grid-template-columns:76px minmax(12px,1fr) 30px;align-items:center;gap:6px;font-size:11px}\n#barkly-access-panel .ba-daily-bar{height:10px;min-width:2px;background:#ff4fa3;border-radius:4px}\n#barkly-access-panel .ba-person-detail{margin:8px 0;padding:8px;background:#171717;border:1px solid #444;border-radius:8px}\n#barkly-access-panel .ba-person-detail p{font-size:12px;color:#eee}\n#barkly-access-panel select:focus-visible,#barkly-access-panel summary:focus-visible{outline:3px solid #fff;outline-offset:3px}\n#barkly-access-panel [hidden]{display:none!important}\n";
+var frequent_default = "/* Frequent uses the persistent conversation store and exposes native route links. */\n#barkly-access-panel .ba-frequent-title{margin:8px 2px;color:#ff8bc5;font-size:18px}\n#barkly-access-panel .ba-frequent-controls{display:grid;grid-template-columns:1fr;gap:4px;margin:10px 0}\n#barkly-access-panel .ba-frequent-controls label{font-size:12px;font-weight:700;color:#f1e8ed;margin-top:4px}\n#barkly-access-panel #ba-frequent-search,#barkly-access-panel #ba-frequent-sort{display:block;width:100%;min-height:38px;padding:8px;background:#101010;color:#f1f1f1;border:1px solid #777;border-radius:8px}\n#barkly-access-panel .ba-frequent-status{color:#f1e8ed;background:#181318;border-left:3px solid #ff4fa3;padding:8px;margin:8px 0;font-size:12px;line-height:1.45}\n#barkly-access-panel .ba-frequent-list{list-style:none;padding:0;margin:8px 0;display:grid;gap:7px}\n#barkly-access-panel .ba-frequent-item{display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:start;gap:9px;padding:10px;background:#101010;border:1px solid #4c3a47;border-radius:9px}\n#barkly-access-panel .ba-contact-monogram{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#392533;color:#ffd2e7;font-weight:800;font-size:15px;object-fit:cover}\n#barkly-access-panel .ba-contact-content{min-width:0}\n#barkly-access-panel .ba-contact-title{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}\n#barkly-access-panel .ba-contact-link{color:#ff9bc9;font-weight:750;overflow-wrap:anywhere;text-decoration:underline;text-underline-offset:2px}\n#barkly-access-panel .ba-contact-link:hover{color:#ffd2e7}\n#barkly-access-panel .ba-contact-link:focus-visible{outline:3px solid #fff;outline-offset:3px;border-radius:2px}\n#barkly-access-panel .ba-contact-unavailable{color:#f5eef2;font-weight:750;overflow-wrap:anywhere}\n#barkly-access-panel .ba-contact-username{font-size:11px;color:#e3cbd8;overflow-wrap:anywhere}\n#barkly-access-panel .ba-contact-identity,#barkly-access-panel .ba-contact-meta,#barkly-access-panel .ba-contact-fallback{margin:3px 0 0;color:#d8cdd3;font-size:11px;line-height:1.4;overflow-wrap:anywhere}\n#barkly-access-panel .ba-contact-fallback{grid-column:2 / -1;color:#ffd3a8}\n#barkly-access-panel .ba-contact-count{color:#fff;font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums}\n#barkly-access-panel .ba-frequent-empty{padding:12px;background:#181318;border:1px dashed #806879;border-radius:8px;color:#eee;line-height:1.5}\n#barkly-access-panel #ba-frequent-search:focus-visible,#barkly-access-panel #ba-frequent-sort:focus-visible{outline:3px solid #fff;outline-offset:2px}\n#barkly-access-panel .ba-secondary{background:#292929;color:#f1f1f1}\n@media(prefers-reduced-motion:reduce){#barkly-access-panel .ba-contact-link{scroll-behavior:auto!important;animation:none!important;transition:none!important}}\n";
 
 // src/integrations/betterdiscord/BarklyAccess.plugin.js
 var BarklyAccess = class {
@@ -790,14 +926,13 @@ var BarklyAccess = class {
     this.styleId = "barkly-access-quiet-view";
     this.panelId = "barkly-access-panel";
     this.memberTabId = "barkly-access-frequent";
-    this.state = { quiet: false, layout: false, numbered: false, showMembers: false, showChannels: false, showToolbar: false };
-    this.classes = { quiet: "ba-quiet", layout: "ba-readable-layout", numbered: "ba-numbered-chat", members: "ba-hide-members", channels: "ba-hide-channels", toolbar: "ba-hide-toolbar" };
+    this.state = { quiet: false, layout: false, numbered: false, showMembers: false, showChannels: false, showToolbar: false, currentUserId: "", controlSize: "normal", density: "comfortable" };
+    this.classes = { quiet: "ba-quiet", layout: "ba-readable-layout", numbered: "ba-numbered-chat", members: "ba-hide-members", channels: "ba-hide-channels", toolbar: "ba-hide-toolbar", largeControls: "ba-large-controls", dense: "ba-dense-layout" };
     this.chunkClasses = ["ba-chunk-start", "ba-chunk-middle", "ba-chunk-end", "ba-chunk-single"];
   }
   start() {
+    this.stopped = false;
     this.state = Object.assign(this.state, BdApi.Data.load("BarklyAccess", "state") || {});
-    this.frequentEngine = new AggregationEngine();
-    this.frequentLabels = /* @__PURE__ */ new Map();
     this.analyticsStore = new HistoricalStore({
       load: () => BdApi.Data.load("BarklyAccess", "historicalStats"),
       save: (value) => BdApi.Data.save("BarklyAccess", "historicalStats", value)
@@ -806,14 +941,16 @@ var BarklyAccess = class {
       getSelectedConversation: () => this.getSelectedConversation(),
       // The adapter deliberately avoids Discord Webpack/internal stores. If a
       // supported identity provider is added later it can be injected here.
-      getCurrentUserId: () => null
+      getCurrentUserId: () => this.state.currentUserId || null,
+      getConversationPath: () => window.location.pathname
     });
     this.collectionCoordinator = new CollectionCoordinator({
       adapter: this.historyAdapter,
       store: this.analyticsStore,
-      onProgress: () => {
+      onProgress: (event) => {
         this.renderStats();
         this.refreshFrequent();
+        this.updateCollectionPopup(event);
       }
     });
     this.apply();
@@ -853,7 +990,7 @@ var BarklyAccess = class {
     this.updatePanel();
   }
   restore() {
-    this.state = { quiet: false, layout: false, numbered: false, showMembers: false, showChannels: false, showToolbar: false };
+    this.state = { quiet: false, layout: false, numbered: false, showMembers: false, showChannels: false, showToolbar: false, currentUserId: this.state.currentUserId || "", controlSize: "normal", density: "comfortable" };
     this.apply();
     this.save();
     this.updatePanel();
@@ -867,6 +1004,8 @@ var BarklyAccess = class {
     b.classList.toggle(this.classes.members, !!this.state.quiet && !this.state.showMembers);
     b.classList.toggle(this.classes.channels, !!this.state.quiet && !this.state.showChannels);
     b.classList.toggle(this.classes.toolbar, !!this.state.quiet && !this.state.showToolbar);
+    b.classList.toggle(this.classes.largeControls, this.state.controlSize === "large");
+    b.classList.toggle(this.classes.dense, this.state.density === "compact");
     BdApi.DOM.addStyle(this.styleId, this.css());
   }
   createPanel() {
@@ -874,7 +1013,7 @@ var BarklyAccess = class {
     const p = document.createElement("aside");
     p.id = this.panelId;
     p.setAttribute("aria-label", "Barkly Access");
-    p.innerHTML = `<button class="ba-main" aria-expanded="false">Barkly Access <span aria-hidden="true">\uFF0B</span></button><div class="ba-options" hidden><div class="ba-tabs" role="tablist" aria-label="Barkly Access features"><button type="button" role="tab" aria-selected="true" data-tab="controls" class="ba-tab-active">Access</button><button type="button" role="tab" aria-selected="false" data-tab="frequent">Frequent</button><button type="button" role="tab" aria-selected="false" data-tab="stats">Stats</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F \xB7 quiet view<br>Ctrl+Shift+R \xB7 restore</p></section><section data-pane="frequent" hidden><p class="ba-summary">Ranks authors from locally stored aggregates for conversations you select. No message text is saved.</p><details class="ba-import-fallback"><summary>Optional testing or fallback import</summary><label class="ba-file-label" for="ba-frequent-file">Choose JSON file</label><input id="ba-frequent-file" type="file" accept=".json,application/json" aria-label="Import message history JSON file"><button type="button" data-action="clearFrequent" class="ba-secondary">Clear imported ranking</button></details><div class="ba-import-status" role="status" aria-live="polite">Automatic stats update while a conversation is open.</div><ol class="ba-frequent-list" aria-label="Frequent authors by message count" aria-live="polite"></ol></section><section data-pane="stats" hidden><h2 class="ba-stats-title">Conversation analytics</h2><p class="ba-summary">Local, metadata-only summaries. Discord exposes only history rendered in the selected conversation, so coverage cannot be confirmed as complete.</p><div class="ba-collection-status" role="status" aria-live="polite"></div><button type="button" data-action="openAnalytics" class="ba-open-analytics">Open Analytics Dashboard</button><button type="button" data-action="collectNow" class="ba-secondary">Backfill selected conversation</button><button type="button" data-action="cancelCollection" class="ba-secondary" hidden>Stop collection</button><button type="button" data-action="clearConversation" class="ba-secondary">Clear this conversation</button><button type="button" data-action="clearAnalytics" class="ba-secondary">Clear all analytics</button></section></div>`;
+    p.innerHTML = `<button class="ba-main" aria-expanded="false">Barkly Access <span aria-hidden="true">\uFF0B</span></button><div class="ba-options" hidden><div class="ba-tabs" role="tablist" aria-label="Barkly Access features"><button type="button" role="tab" aria-selected="true" data-tab="controls" class="ba-tab-active">Access</button><button type="button" role="tab" aria-selected="false" data-tab="frequent">Frequent</button><button type="button" role="tab" aria-selected="false" data-tab="stats">Stats</button></div><section data-pane="controls"><p class="ba-summary">Show less at once. Bring anything back anytime.</p><button data-action="quiet" aria-pressed="false">Quiet view</button><button data-action="layout" aria-pressed="false">Readable chat layout</button><button data-action="numbered" aria-pressed="false">Conversation cards</button><div class="ba-extra"><button data-action="showMembers">Member list</button><button data-action="showChannels">Channel list</button><button data-action="showToolbar">Chat toolbar</button></div><div class="ba-access-settings"><label for="ba-current-user-id">Current Discord user ID <span>(optional; enables reliable sender separation)</span></label><input id="ba-current-user-id" inputmode="numeric" autocomplete="off" maxlength="20" placeholder="Paste your user ID"><label for="ba-control-size">Control size</label><select id="ba-control-size"><option value="normal">Normal</option><option value="large">Large</option></select><label for="ba-density">Visual density</label><select id="ba-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div><button data-action="restore" class="ba-restore">Restore Discord view</button><p class="ba-help">Ctrl+Shift+F \xB7 quiet view<br>Ctrl+Shift+R \xB7 restore</p></section><section data-pane="frequent" hidden><h2 class="ba-frequent-title">Frequent contacts</h2><p class="ba-summary">People and conversations come from the same saved, deduplicated analytics as Stats. Counts mean unique messages collected for that person in that conversation.</p><div class="ba-frequent-controls"><label for="ba-frequent-search">Search people</label><input id="ba-frequent-search" type="search" autocomplete="off" placeholder="Name, username, or ID"><label for="ba-frequent-sort">Sort contacts</label><select id="ba-frequent-sort"><option value="messages">Most messages</option><option value="recent">Most recent interaction</option><option value="name">Name</option></select></div><div class="ba-frequent-status" role="status" aria-live="polite">Frequent contacts update as conversation batches are collected.</div><ul class="ba-frequent-list" aria-label="Tracked people and conversation shortcuts"></ul></section><section data-pane="stats" hidden><h2 class="ba-stats-title">Conversation analytics</h2><p class="ba-summary">Local, metadata-only summaries. Discord exposes only history rendered in the selected conversation, so coverage cannot be confirmed as complete.</p><div class="ba-collection-status" role="status" aria-live="polite"></div><button type="button" data-action="openAnalytics" class="ba-open-analytics">Open Analytics Dashboard</button><button type="button" data-action="collectNow" class="ba-secondary">Backfill selected conversation</button><button type="button" data-action="cancelCollection" class="ba-secondary" hidden>Stop collection</button><button type="button" data-action="clearConversation" class="ba-secondary">Clear this conversation</button><button type="button" data-action="clearAnalytics" class="ba-secondary">Clear all analytics</button></section></div>`;
     p.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-action], button[data-tab], button[data-author], button[data-exclude], button.ba-main");
       if (!b) return;
@@ -908,14 +1047,50 @@ var BarklyAccess = class {
       if (a === "restore") this.restore();
       else if (a === "openAnalytics") this.openAnalyticsDashboard();
       else if (a === "collectNow") this.startCollectionNow();
-      else if (a === "clearFrequent") this.clearFrequent();
       else if (a === "clearConversation") this.clearCurrentConversation();
       else if (a === "clearAnalytics") this.clearAllAnalytics();
       else if (a === "cancelCollection") this.cancelSelectedCollection();
       else if (a === "quiet") this.toggleQuiet();
       else if (a) this.toggle(a);
     });
-    p.querySelector("#ba-frequent-file").addEventListener("change", (e) => this.importFrequentFile(e));
+    p.querySelector("#ba-frequent-search").addEventListener("input", () => this.refreshFrequent());
+    p.querySelector("#ba-frequent-sort").addEventListener("change", () => this.refreshFrequent());
+    const userId = p.querySelector("#ba-current-user-id");
+    userId.value = this.state.currentUserId || "";
+    userId.addEventListener("change", () => {
+      const value = userId.value.trim();
+      this.state.currentUserId = /^\d{15,20}$/.test(value) ? value : "";
+      if (!this.state.currentUserId && value) BdApi.UI.showToast("Enter a numeric Discord user ID, or leave it blank.", { type: "error" });
+      else BdApi.UI.showToast("Sender identity setting saved locally.", { type: "success" });
+      userId.value = this.state.currentUserId;
+      this.save();
+      this.historyAdapter.getCurrentUserId = () => this.state.currentUserId || null;
+      this.renderStats();
+    });
+    const controlSize = p.querySelector("#ba-control-size");
+    controlSize.value = this.state.controlSize || "normal";
+    controlSize.addEventListener("change", () => {
+      this.state.controlSize = controlSize.value === "large" ? "large" : "normal";
+      this.apply();
+      this.save();
+    });
+    const density = p.querySelector("#ba-density");
+    density.value = this.state.density || "comfortable";
+    density.addEventListener("change", () => {
+      this.state.density = density.value === "compact" ? "compact" : "comfortable";
+      this.apply();
+      this.save();
+    });
+    p.querySelector(".ba-tabs").addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      const tabs = [...p.querySelectorAll("[data-tab]")];
+      const index = tabs.indexOf(document.activeElement);
+      if (index < 0) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : event.key === "ArrowRight" ? (index + 1) % tabs.length : (index - 1 + tabs.length) % tabs.length;
+      tabs[next].focus();
+      tabs[next].click();
+    });
     document.body.appendChild(p);
     this.panel = p;
     this.updatePanel();
@@ -930,6 +1105,7 @@ var BarklyAccess = class {
       if (this.activeConversationId) this.collectionCoordinator.cancel(this.activeConversationId);
       this.activeConversationId = selected;
       this.lastHistorySignature = "";
+      this.initialAttemptedFor = null;
       this.queueHistoryCollection();
     }
     const root = document.querySelector('[class*="scrollerInner"]');
@@ -953,22 +1129,24 @@ var BarklyAccess = class {
     if (!id) return;
     this.activeConversationId = id;
     this.lastHistorySignature = "";
-    this.collectSelectedConversation();
+    this.initialAttemptedFor = null;
+    this.collectSelectedConversation({ manual: true });
   }
-  async collectSelectedConversation() {
+  async collectSelectedConversation({ manual = false } = {}) {
     const conversationId = this.getSelectedConversation();
     if (!conversationId || conversationId !== this.activeConversationId) return;
     if (this.collectionCoordinator.active.has(String(conversationId))) return;
     const root = document.querySelector('[class*="scrollerInner"]');
     const signature = root ? [...root.querySelectorAll('[class*="messageListItem"]')].map((row) => row.id || row.getAttribute("data-list-item-id") || "").join("|") : "";
     if (!signature || signature === this.lastHistorySignature) return;
-    const collection = this.collectionCoordinator.collect(conversationId);
+    const mode = collectionModeFor(this.analyticsStore.getConversation(conversationId)?.collection);
+    if (!manual && mode === "initial" && this.initialAttemptedFor === conversationId) return;
+    if (mode === "initial") this.initialAttemptedFor = conversationId;
+    const collection = this.collectionCoordinator.collect(conversationId, { mode });
     this.renderStats();
     const result = await collection;
-    if (result.status !== "failed") {
-      const finalRoot = document.querySelector('[class*="scrollerInner"]');
-      this.lastHistorySignature = finalRoot ? [...finalRoot.querySelectorAll('[class*="messageListItem"]')].map((row) => row.id || row.getAttribute("data-list-item-id") || "").join("|") : signature;
-    }
+    const finalRoot = document.querySelector('[class*="scrollerInner"]');
+    this.lastHistorySignature = finalRoot ? [...finalRoot.querySelectorAll('[class*="messageListItem"]')].map((row) => row.id || row.getAttribute("data-list-item-id") || "").join("|") : signature;
     this.renderStats();
     this.refreshFrequent();
   }
@@ -977,11 +1155,71 @@ var BarklyAccess = class {
     const snapshot = this.analyticsStore.snapshot();
     const currentId = this.getSelectedConversation();
     const current = snapshot.conversations[currentId];
-    this.panel.querySelector('[data-action="cancelCollection"]').hidden = !this.collectionCoordinator.active.has(String(currentId));
+    const active = this.collectionCoordinator.active.has(String(currentId));
+    this.panel.querySelector('[data-action="cancelCollection"]').hidden = !active;
+    const refresh = this.panel.querySelector('[data-action="collectNow"]');
+    refresh.disabled = !currentId || active;
+    refresh.textContent = current?.collection?.state === "initial_completed" ? "Refresh visible messages" : current?.collection?.state === "incomplete" || current?.collection?.state === "interrupted" || current?.collection?.state === "failed" ? "Retry initial backfill" : "Start initial backfill";
     const status = this.panel.querySelector(".ba-collection-status");
     const entry = current;
-    status.textContent = entry ? `Conversation ${entry.conversationId}: ${entry.status}. ${entry.coverage.recordsProcessed.toLocaleString()} unique messages stored; ${entry.coverage.encountered.toLocaleString()} encountered this run; ${entry.coverage.duplicatesIgnored.toLocaleString()} duplicates ignored. Collection stops when the visible UI stops changing near its oldest exposed edge. Discord does not confirm whether older history exists.${entry.coverage.stopReason ? ` Stop reason: ${entry.coverage.stopReason}.` : ""}${entry.error ? ` Latest error: ${entry.error}` : ""}` : this.collectionCoordinator.active.has(String(currentId)) ? "Collecting visible message history for the selected conversation." : "Open a conversation in Discord to collect locally visible message metadata.";
+    status.textContent = entry ? `Conversation ${entry.conversationId}: ${entry.collection.state.replaceAll("_", " ")}. ${entry.coverage.recordsProcessed.toLocaleString()} unique messages stored; ${entry.coverage.encountered.toLocaleString()} encountered in the last run; ${entry.coverage.duplicatesIgnored.toLocaleString()} duplicates ignored. ${entry.collection.lastSuccessfulUpdateAt ? `Last successful update ${new Date(entry.collection.lastSuccessfulUpdateAt).toLocaleString()}.` : ""} Coverage is limited to rows visible through Discord's UI.${entry.collection.stopReason ? ` Last stop reason: ${entry.collection.stopReason}.` : ""}${entry.collection.error || entry.error ? ` Latest error: ${entry.collection.error || entry.error}` : ""}` : active ? "Collecting visible message history for the selected conversation." : "Open a conversation in Discord to collect locally visible message metadata.";
     if (this.dashboard && !this.dashboard.hidden) this.renderAnalyticsDashboard();
+  }
+  conversationLabel(conversationId) {
+    const heading = [...document.querySelectorAll('main h1, main [role="heading"][aria-level="1"]')].find((node) => node.getClientRects?.().length && node.textContent?.trim());
+    const name = heading?.textContent?.trim();
+    return name ? `${name} \xB7 ${conversationId}` : `Conversation ${conversationId}`;
+  }
+  updateCollectionPopup(event) {
+    if (this.stopped || event.mode !== "initial") return;
+    if (event.phase === "start" && this.collectionPopup && this.collectionPopupConversation !== String(event.conversationId)) this.hideCollectionPopup();
+    if (event.phase === "start" && !this.collectionPopup) {
+      const popup2 = document.createElement("section");
+      popup2.className = "ba-collection-popup";
+      popup2.setAttribute("role", "region");
+      popup2.setAttribute("aria-label", "Conversation collection status");
+      popup2.innerHTML = '<div class="ba-collection-popup-heading"><h2>Collecting conversation</h2><button type="button" data-popup-cancel>Cancel collection</button></div><p data-popup-conversation></p><p data-popup-state></p><p data-popup-counts></p><p data-popup-duplicates hidden></p><div class="ba-sr-only" role="status" aria-live="polite" aria-atomic="true" data-popup-announcement></div>';
+      document.body.appendChild(popup2);
+      this.collectionPopup = popup2;
+      this.collectionPopupConversation = String(event.conversationId);
+      this.collectionPopupLastAnnouncementAt = 0;
+      const popupConversation = String(event.conversationId);
+      popup2.querySelector("[data-popup-cancel]").addEventListener("click", () => this.collectionCoordinator.cancel(popupConversation));
+    }
+    const popup = this.collectionPopup;
+    if (!popup || this.collectionPopupConversation !== String(event.conversationId)) return;
+    clearTimeout(this.collectionPopupTimeout);
+    const terminal = event.phase === "finish";
+    const count2 = Number(event.processed || 0);
+    const stateText = terminal ? this.collectionPopupTerminalText(event) : event.phase === "start" ? "Starting initial backfill\u2026" : `Backfilling visible history \xB7 ${Number(event.batches || 0).toLocaleString()} batches processed`;
+    popup.querySelector("[data-popup-conversation]").textContent = this.conversationLabel(event.conversationId);
+    popup.querySelector("[data-popup-state]").textContent = stateText;
+    popup.querySelector("[data-popup-counts]").textContent = `${count2.toLocaleString()} new unique messages collected \xB7 ${Number(event.batches || 0).toLocaleString()} batches processed`;
+    const duplicateLine = popup.querySelector("[data-popup-duplicates]");
+    duplicateLine.hidden = !event.duplicates;
+    duplicateLine.textContent = event.duplicates ? `${Number(event.duplicates).toLocaleString()} duplicate messages ignored.` : "";
+    popup.querySelector("[data-popup-cancel]").hidden = terminal;
+    const now = Date.now();
+    if (terminal || event.phase === "start" || now - this.collectionPopupLastAnnouncementAt >= 2500) {
+      popup.querySelector("[data-popup-announcement]").textContent = `${stateText} ${count2.toLocaleString()} unique messages collected in ${Number(event.batches || 0).toLocaleString()} batches.${event.duplicates ? ` ${Number(event.duplicates).toLocaleString()} duplicates ignored.` : ""}`;
+      this.collectionPopupLastAnnouncementAt = now;
+    }
+    if (terminal) {
+      const delay = event.collectionState === "completed" ? 3e3 : 6500;
+      this.collectionPopupTimeout = setTimeout(() => this.hideCollectionPopup(), delay);
+    }
+  }
+  collectionPopupTerminalText(event) {
+    if (event.collectionState === "completed") return event.mode === "initial" ? "Initial backfill reached its observable stopping condition. Discord does not report the total conversation history." : "Visible messages refreshed.";
+    if (event.collectionState === "incomplete") return `Initial backfill stopped before the oldest visible edge was confirmed (${event.stopReason || "unknown reason"}). Saved messages are kept; retry when ready.`;
+    if (event.collectionState === "interrupted") return "Collection was interrupted. Messages already saved were kept; retry when ready.";
+    return `Collection failed${event.error ? `: ${event.error}` : ". Saved messages were kept."}`;
+  }
+  hideCollectionPopup() {
+    clearTimeout(this.collectionPopupTimeout);
+    this.collectionPopup?.remove();
+    this.collectionPopup = null;
+    this.collectionPopupConversation = null;
   }
   openAnalyticsDashboard() {
     if (this.dashboard) {
@@ -999,10 +1237,11 @@ var BarklyAccess = class {
     view.innerHTML = `<header class="ba-dashboard-header"><button type="button" data-dashboard-back>\u2190 Back to Barkly Access</button><div><p class="ba-kicker">BARKLY ACCESS \xB7 LOCAL ANALYTICS</p><h1 id="ba-dashboard-title" tabindex="-1">Conversation analytics</h1><p class="ba-dashboard-intro">A readable view of the message metadata this plugin has collected on this device. Message text is not retained.</p></div><button type="button" data-dashboard-clear>Clear analytics</button></header>
       <section class="ba-dashboard-filters" aria-label="Analytics filters"><label>Conversation<select data-filter="conversation"><option value="all">All conversations</option></select></label><label>Person<select data-filter="person"><option value="all">All people</option></select></label><label>From<input type="date" data-filter="from"></label><label>Through<input type="date" data-filter="to"></label><label>Group activity<select data-filter="group"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option></select></label><label>Search people<input type="search" data-filter="search" placeholder="Name or user ID"></label><label>Sort people<select data-filter="sort"><option value="messages">Most messages</option><option value="name">Name</option><option value="recent">Most recent</option></select></label><label>Text size<select data-filter="text"><option value="normal">Normal</option><option value="large">Large</option><option value="xlarge">Extra large</option></select></label><label class="ba-check-filter"><input type="checkbox" data-filter="contrast"> Higher contrast</label></section>
       <main class="ba-dashboard-content"><section aria-labelledby="ba-overview-title"><h2 id="ba-overview-title">Overview</h2><p class="ba-coverage-note" data-dashboard-coverage role="status"></p><div class="ba-dashboard-metrics" data-dashboard-metrics></div></section>
+      <div class="ba-sender-sections"><section aria-labelledby="ba-my-title"><h2 id="ba-my-title">My Messages</h2><p data-dashboard-my role="status"></p></section><section aria-labelledby="ba-other-title"><h2 id="ba-other-title">Other Participant's Messages</h2><p data-dashboard-other role="status"></p></section><section aria-labelledby="ba-compare-title"><h2 id="ba-compare-title">Compare Activity</h2><p data-dashboard-compare role="status"></p></section></div>
       <div class="ba-dashboard-columns"><section><h2>Activity over time</h2><p class="ba-plain-note">Tables keep exact values available to screen readers and keyboard users.</p><div class="ba-table-wrap"><table><caption>Message activity grouped by selected interval (UTC)</caption><thead><tr><th scope="col">Period</th><th scope="col">Messages</th></tr></thead><tbody data-dashboard-activity></tbody></table></div></section><section><h2>Activity by hour</h2><p class="ba-plain-note" data-hour-note></p><div class="ba-table-wrap"><table><caption>Collected messages by hour of day (UTC)</caption><thead><tr><th scope="col">Hour</th><th scope="col">Messages</th></tr></thead><tbody data-dashboard-hours></tbody></table></div></section></div>
       <section><h2>Activity by day of week</h2><p class="ba-plain-note">Derived from stored UTC daily totals.</p><div class="ba-table-wrap"><table><caption>Messages recorded on each weekday (UTC)</caption><thead><tr><th scope="col">Weekday</th><th scope="col">Messages</th></tr></thead><tbody data-dashboard-weekdays></tbody></table></div></section>
       <section><h2>People</h2><p class="ba-plain-note">Select a person row to see their stored totals and activity range.</p><div class="ba-table-wrap"><table><caption>People in the selected conversation scope</caption><thead><tr><th scope="col">Person</th><th scope="col">Total</th><th scope="col">Sent</th><th scope="col">Received</th><th scope="col">Unknown</th><th scope="col">First recorded</th><th scope="col">Most recent</th></tr></thead><tbody data-dashboard-people></tbody></table></div><div class="ba-pagination" aria-label="People table pages"><button type="button" data-page-prev>Previous people</button><span data-page-status aria-live="polite"></span><button type="button" data-page-next>Next people</button><label>Rows per page<select data-filter="page-size"><option>25</option><option>50</option><option>100</option></select></label></div><section class="ba-person-detail" data-dashboard-person aria-live="polite"></section></section>
-      <section><h2>Conversations and collection coverage</h2><div class="ba-table-wrap"><table><caption>Stored conversation totals and collection status</caption><thead><tr><th scope="col">Conversation ID</th><th scope="col">Messages</th><th scope="col">People</th><th scope="col">Status</th><th scope="col">Encountered</th><th scope="col">Duplicates</th><th scope="col">Oldest recorded</th><th scope="col">Newest recorded</th><th scope="col">Last stopping reason</th></tr></thead><tbody data-dashboard-conversations></tbody></table></div></section></main></section>`;
+      <section><h2>Conversations and collection coverage</h2><div class="ba-table-wrap"><table><caption>Stored conversation totals and collection status</caption><thead><tr><th scope="col">Conversation ID</th><th scope="col">Messages</th><th scope="col">People</th><th scope="col">Initial backfill</th><th scope="col">Status</th><th scope="col">Encountered</th><th scope="col">Duplicates</th><th scope="col">Oldest recorded</th><th scope="col">Newest recorded</th><th scope="col">Last stopping reason</th></tr></thead><tbody data-dashboard-conversations></tbody></table></div></section></main></section>`;
     document.body.appendChild(view);
     this.dashboard = view;
     this.dashboardReturnFocus = this.panel?.querySelector('[data-action="openAnalytics"]');
@@ -1107,6 +1346,31 @@ var BarklyAccess = class {
     const active = scope.filter((item) => this.collectionCoordinator.active.has(item.conversationId)).length;
     const complete = scope.filter((item) => item.coverage.complete).length;
     coverage.textContent = `Coverage is based on the visible UI only. ${scope.length} tracked conversation(s); ${active} collecting now; ${complete} marked complete by the source. Discord does not expose a definitive total-history count, so \u201Ccomplete\u201D is unavailable for this UI adapter. ${scope.reduce((n, item) => n + (item.coverage.recordsProcessed || 0), 0).toLocaleString()} unique message records have been processed. ${scope.reduce((n, item) => n + (item.coverage.encountered || 0), 0).toLocaleString()} records encountered in the latest saved runs; ${scope.reduce((n, item) => n + (item.coverage.duplicatesIgnored || 0), 0).toLocaleString()} duplicates ignored in those runs.`;
+    const currentUserId = String(this.state.currentUserId || "");
+    const senderStats = scope.reduce((result, item) => {
+      for (const person of Object.values(item.people)) {
+        if (currentUserId && person.authorId === currentUserId) {
+          result.mine.sent += person.sent || 0;
+          result.mine.unknown += person.unknown || 0;
+        } else {
+          result.other.received += person.received || 0;
+          result.other.unknown += person.unknown || 0;
+        }
+      }
+      return result;
+    }, { mine: { sent: 0, unknown: 0 }, other: { received: 0, unknown: 0 } });
+    const myRoot = view.querySelector("[data-dashboard-my]"), otherRoot = view.querySelector("[data-dashboard-other]"), compareRoot = view.querySelector("[data-dashboard-compare]");
+    if (!currentUserId) {
+      myRoot.textContent = "Set your numeric Discord user ID in Barkly Access settings to separate and verify your sent messages.";
+      otherRoot.textContent = "Set your numeric Discord user ID to isolate other participants. Unknown direction or sender records are never silently attributed.";
+      compareRoot.textContent = "Comparison is unavailable until a verified current-user ID is set.";
+    } else {
+      const mineCount = senderStats.mine.sent + senderStats.mine.unknown;
+      const otherCount = senderStats.other.received + senderStats.other.unknown;
+      myRoot.textContent = `${senderStats.mine.sent.toLocaleString()} reliably current-user sent messages${senderStats.mine.unknown ? `; ${senderStats.mine.unknown.toLocaleString()} unknown-direction records remain unattributed` : ""}.`;
+      otherRoot.textContent = `${senderStats.other.received.toLocaleString()} participant received messages${senderStats.other.unknown ? `; ${senderStats.other.unknown.toLocaleString()} unknown-sender or unknown-direction records remain unattributed` : ""}.`;
+      compareRoot.textContent = `Current user: ${mineCount.toLocaleString()} \xB7 Other participants: ${otherCount.toLocaleString()} \xB7 Difference: ${Math.abs(mineCount - otherCount).toLocaleString()} messages.`;
+    }
     this.fillTable(view.querySelector("[data-dashboard-activity]"), summary.activity.map((point) => [point.period, point.count]));
     const hours = view.querySelector("[data-dashboard-hours]");
     hours.replaceChildren();
@@ -1166,7 +1430,7 @@ var BarklyAccess = class {
     const conversationsBody = view.querySelector("[data-dashboard-conversations]");
     conversationsBody.replaceChildren();
     scope.forEach((item) => {
-      const cells = [item.conversationId, (item.totals.sent + item.totals.received + item.totals.unknown).toLocaleString(), String(Object.keys(item.people).length), item.status, (item.coverage.encountered || 0).toLocaleString(), (item.coverage.duplicatesIgnored || 0).toLocaleString(), item.coverage.oldestTimestamp ? new Date(item.coverage.oldestTimestamp).toLocaleString() : "No timestamp", item.coverage.newestTimestamp ? new Date(item.coverage.newestTimestamp).toLocaleString() : "No timestamp", item.coverage.stopReason || "Not reported"];
+      const cells = [item.conversationId, (item.totals.sent + item.totals.received + item.totals.unknown).toLocaleString(), String(Object.keys(item.people).length), item.collection.state.replaceAll("_", " "), item.status, (item.coverage.encountered || 0).toLocaleString(), (item.coverage.duplicatesIgnored || 0).toLocaleString(), item.coverage.oldestTimestamp ? new Date(item.coverage.oldestTimestamp).toLocaleString() : "No timestamp", item.coverage.newestTimestamp ? new Date(item.coverage.newestTimestamp).toLocaleString() : "No timestamp", item.coverage.stopReason || "Not reported"];
       const row = document.createElement("tr");
       cells.forEach((value, index) => {
         const cell = document.createElement(index === 0 ? "th" : "td");
@@ -1287,77 +1551,74 @@ var BarklyAccess = class {
     const list = this.panel.querySelector(".ba-frequent-list");
     if (!list) return;
     list.replaceChildren();
-    const stored = summarizeAnalytics(this.analyticsStore.snapshot()).people.filter((person) => person.received > 0).map((person, index) => ({ rank: index + 1, userId: person.authorId, name: person.name, count: person.received }));
-    const ranking = (stored.length ? stored : this.frequentEngine.getRanking().map((person, index) => ({ ...person, name: this.frequentLabels.get(person.userId) || person.userId }))).slice(0, 100);
-    if (!ranking.length) {
-      const li = document.createElement("li");
-      li.textContent = "No history collected yet. Open a conversation in Discord to begin.";
-      list.appendChild(li);
+    const contacts = buildFrequentContacts(this.analyticsStore.snapshot(), {
+      search: this.panel.querySelector("#ba-frequent-search")?.value || "",
+      sort: this.panel.querySelector("#ba-frequent-sort")?.value || "messages"
+    });
+    const status = this.panel.querySelector(".ba-frequent-status");
+    if (!contacts.length) {
+      const empty = document.createElement("li");
+      empty.className = "ba-frequent-empty";
+      empty.textContent = "No tracked contacts match yet. Open a Discord conversation; collected people will appear here.";
+      list.appendChild(empty);
+      status.textContent = "No collected contacts match this search.";
       return;
     }
-    ranking.forEach(({ rank, userId, count: count2, name }) => {
-      const li = document.createElement("li");
-      li.className = "ba-frequent-item";
-      const rankLabel = document.createElement("span");
-      rankLabel.className = "ba-rank";
-      rankLabel.setAttribute("aria-label", `Rank ${rank}`);
-      rankLabel.textContent = String(rank);
-      const label = document.createElement("span");
-      label.className = "ba-frequent-name";
-      label.textContent = name || userId;
-      const amount = document.createElement("span");
-      amount.className = "ba-frequent-count";
-      amount.textContent = `${count2.toLocaleString()} messages`;
-      li.append(rankLabel, label, amount);
-      list.appendChild(li);
-    });
-  }
-  extractMessages(data) {
-    if (Array.isArray(data)) return data;
-    if (data && typeof data === "object") {
-      if (Array.isArray(data.messages)) return data.messages;
-      if (Array.isArray(data.data)) return data.data;
-      if (Array.isArray(data.items)) return data.items;
+    status.textContent = `${contacts.length.toLocaleString()} person\u2013conversation entries. Counts are unique messages collected in each conversation; history coverage may be partial.`;
+    for (const contact of contacts) {
+      const item = document.createElement("li");
+      item.className = "ba-frequent-item";
+      const monogram = document.createElement(contact.avatarUrl ? "img" : "span");
+      monogram.className = "ba-contact-monogram";
+      if (contact.avatarUrl) {
+        monogram.src = contact.avatarUrl;
+        monogram.alt = "";
+        monogram.loading = "lazy";
+        monogram.referrerPolicy = "no-referrer";
+      } else {
+        monogram.setAttribute("aria-hidden", "true");
+        monogram.textContent = (contact.displayName.trim()[0] || "?").toLocaleUpperCase();
+      }
+      const content = document.createElement("div");
+      content.className = "ba-contact-content";
+      const title = document.createElement("div");
+      title.className = "ba-contact-title";
+      const link = createDiscordConversationLink(document, contact);
+      if (link) {
+        title.appendChild(link);
+      } else {
+        const unavailable = document.createElement("span");
+        unavailable.className = "ba-contact-unavailable";
+        unavailable.textContent = contact.displayName;
+        unavailable.setAttribute("aria-label", `${contact.displayName}; conversation shortcut unavailable`);
+        title.appendChild(unavailable);
+      }
+      if (contact.username) {
+        const username = document.createElement("span");
+        username.className = "ba-contact-username";
+        username.textContent = `@${contact.username.replace(/^@/, "")}`;
+        title.appendChild(username);
+      }
+      const identity = document.createElement("p");
+      identity.className = "ba-contact-identity";
+      identity.textContent = `User ID ${contact.authorId} \xB7 Conversation ${contact.conversationId}`;
+      const metadata = document.createElement("p");
+      metadata.className = "ba-contact-meta";
+      metadata.textContent = `${contact.messageCount.toLocaleString()} collected messages \xB7 ${contact.lastTimestamp ? `Last interaction ${new Date(contact.lastTimestamp).toLocaleString()}` : "No timestamp available"} \xB7 ${contact.conversationStatus} collection`;
+      content.append(title, identity, metadata);
+      const count2 = document.createElement("strong");
+      count2.className = "ba-contact-count";
+      count2.textContent = contact.messageCount.toLocaleString();
+      count2.setAttribute("aria-label", `${contact.messageCount.toLocaleString()} collected messages`);
+      item.append(monogram, content, count2);
+      if (!contact.href) {
+        const fallback = document.createElement("p");
+        fallback.className = "ba-contact-fallback";
+        fallback.textContent = "Discord could not safely resolve this conversation shortcut. Reopen this conversation and collect it again to save its route.";
+        item.appendChild(fallback);
+      }
+      list.appendChild(item);
     }
-    throw new Error("Choose a JSON array or an object containing a messages array.");
-  }
-  async importFrequentFile(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const status = this.panel.querySelector(".ba-import-status");
-    try {
-      const parsed = JSON.parse(await file.text());
-      const records = this.extractMessages(parsed);
-      const normalized = normalizeMessages(records, {
-        getMessageId: (m) => m.id ?? m.messageId ?? m.message_id,
-        getAuthorId: (m) => m.author?.id ?? m.authorId ?? m.author_id ?? m.user_id ?? m.userId ?? (typeof m.author === "string" ? m.author : null),
-        getConversationId: (m) => m.channel_id ?? m.conversationId ?? m.channelId ?? m.channel,
-        getTimestamp: (m) => m.timestamp ?? m.createdAt ?? m.created_at
-      });
-      const labels = /* @__PURE__ */ new Map();
-      records.forEach((m) => {
-        if (!m || typeof m !== "object") return;
-        const id = m.author?.id ?? m.authorId ?? m.author_id ?? m.user_id ?? m.userId ?? (typeof m.author === "string" ? m.author : null);
-        const label = m.author?.username ?? m.author?.name ?? m.authorName ?? m.username ?? m.name ?? m.author;
-        if (id != null && typeof label === "string" && label.trim()) labels.set(String(id), label.trim());
-      });
-      const engine = new AggregationEngine();
-      engine.processBatch(normalized);
-      this.frequentEngine = engine;
-      this.frequentLabels = labels;
-      this.refreshFrequent();
-      status.textContent = `Imported ${normalized.length.toLocaleString()} valid records. Message text was discarded.`;
-    } catch (error) {
-      status.textContent = error instanceof SyntaxError ? "Could not read that JSON file. Check that it contains valid JSON." : error.message || "Could not import this file.";
-    } finally {
-      event.target.value = "";
-    }
-  }
-  clearFrequent() {
-    this.frequentEngine.reset();
-    this.frequentLabels.clear();
-    this.panel.querySelector(".ba-import-status").textContent = "Ranking cleared. No message data is retained.";
-    this.refreshFrequent();
   }
   updatePanel() {
     if (!this.panel) return;
@@ -1372,9 +1633,11 @@ var BarklyAccess = class {
     });
   }
   stop() {
+    this.stopped = true;
     document.removeEventListener("keydown", this.onKeyDown, true);
     document.removeEventListener("keydown", this.dashboardEscape, true);
     clearTimeout(this.collectionTimer);
+    this.hideCollectionPopup();
     this.chunkObserver?.disconnect();
     this.historyObserver?.disconnect();
     this.messageObserver?.disconnect();
@@ -1384,8 +1647,6 @@ var BarklyAccess = class {
     BdApi.DOM.removeStyle(this.styleId);
     this.dashboard?.remove();
     document.getElementById(this.panelId)?.remove();
-    this.frequentEngine?.reset();
-    this.frequentLabels?.clear();
   }
   groupMessages() {
     const root = document.querySelector("[class*=scrollerInner]");
@@ -1477,6 +1738,22 @@ var BarklyAccess = class {
     #${this.panelId} .ba-restore{background:#ff8bc5;color:#090909;font-weight:700;}
     #${this.panelId} .ba-open-analytics{background:#ff4fa3;color:#090909;font-weight:800;text-align:center;}
     #${this.panelId} .ba-collection-status{color:#f4dce8;font-size:12px;line-height:1.5;padding:9px;background:#171217;border-radius:8px;}
+    #${this.panelId} .ba-access-settings{display:grid;gap:7px;margin:10px 0;padding:10px;background:#171217;border:1px solid #493a45;border-radius:8px;}
+    #${this.panelId} .ba-access-settings label{font-size:12px;font-weight:700;}#${this.panelId} .ba-access-settings label span{display:block;color:#d8cdd3;font-weight:400;}#${this.panelId} .ba-access-settings input,#${this.panelId} .ba-access-settings select{width:100%;min-height:38px;color:#f1f1f1;background:#101010;border:1px solid #777;border-radius:7px;padding:8px;}#${this.panelId} .ba-access-settings input:focus-visible,#${this.panelId} .ba-access-settings select:focus-visible{outline:3px solid #ff8bc5;outline-offset:2px;}
+    body.${this.classes.largeControls} #${this.panelId} button,body.${this.classes.largeControls} #${this.panelId} input,body.${this.classes.largeControls} #${this.panelId} select{min-height:44px;font-size:16px;}body.${this.classes.dense} #${this.panelId}{width:220px;}
+    .ba-collection-popup{position:fixed;right:22px;bottom:22px;z-index:1000001;width:min(410px,calc(100vw - 32px));max-height:min(45vh,360px);overflow:auto;background:#100b10;color:#f7eef3;border:1px solid #ff69ad;border-left:5px solid #ff4fa3;border-radius:12px;box-shadow:0 12px 40px #000b;padding:16px 18px;font:14px/1.5 system-ui,sans-serif;}
+    .ba-collection-popup *{box-sizing:border-box;}
+    .ba-collection-popup h2{margin:0;font-size:16px;color:#ffacd1;}
+    .ba-collection-popup p{margin:7px 0 0;overflow-wrap:anywhere;}
+    .ba-collection-popup [data-popup-conversation]{font-weight:700;}
+    .ba-collection-popup [data-popup-duplicates]{color:#ffd9a6;}
+    .ba-collection-popup-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+    .ba-collection-popup button{flex:0 0 auto;background:#ff4fa3;color:#120b10;border:0;border-radius:7px;padding:7px 10px;font:inherit;font-weight:750;cursor:pointer;}
+    .ba-collection-popup button:hover{background:#ff9bc9;}
+    .ba-collection-popup button:focus-visible{outline:3px solid #fff;outline-offset:3px;}
+    .ba-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;}
+    @media(max-width:520px){.ba-collection-popup{right:12px;bottom:12px;width:calc(100vw - 24px);}}
+    @media(prefers-reduced-motion:reduce){.ba-collection-popup{scroll-behavior:auto!important;animation:none!important;transition:none!important;}}
     #ba-analytics-dashboard{position:fixed;inset:0;z-index:1000000;overflow:auto;background:#0e0b0e;color:#f5eef2;font:16px/1.55 system-ui,sans-serif;padding:clamp(16px,3vw,44px);--ba-accent:#ff69ad;--ba-panel:#171217;}
     #ba-analytics-dashboard[hidden]{display:none;}
     #ba-analytics-dashboard *{box-sizing:border-box;}
@@ -1502,6 +1779,7 @@ var BarklyAccess = class {
     .ba-metric h3{margin:0 0 8px;color:#d8c9d2;font-size:13px;font-weight:650;}
     .ba-metric p{font-size:clamp(19px,2vw,28px);font-weight:750;margin:0;overflow-wrap:anywhere;}
     .ba-dashboard-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;}
+    .ba-sender-sections{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;} .ba-sender-sections section{background:#171217;border:1px solid #40323c;border-radius:12px;padding:16px;} .ba-sender-sections p{margin:0;color:#f5eef2;}
     .ba-dashboard-content>section,.ba-dashboard-columns>section{min-width:0;}
     .ba-table-wrap{max-width:100%;overflow:auto;border:1px solid #453743;border-radius:10px;background:#151115;}
     #ba-analytics-dashboard table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;}
@@ -1517,7 +1795,7 @@ var BarklyAccess = class {
     #ba-analytics-dashboard.ba-text-xlarge{font-size:20px;}
     #ba-analytics-dashboard.ba-high-contrast{background:#000;color:#fff;--ba-panel:#000;--ba-accent:#ffb8db;}
     #ba-analytics-dashboard.ba-high-contrast .ba-metric,#ba-analytics-dashboard.ba-high-contrast .ba-dashboard-filters,#ba-analytics-dashboard.ba-high-contrast .ba-table-wrap{background:#000;border-color:#fff;}
-    @media(max-width:760px){.ba-dashboard-header{grid-template-columns:1fr;gap:12px}.ba-dashboard-header>button:last-child{justify-self:start}.ba-dashboard-columns{grid-template-columns:1fr}#ba-analytics-dashboard{padding:14px}.ba-dashboard-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:760px){.ba-sender-sections{grid-template-columns:1fr}.ba-dashboard-header{grid-template-columns:1fr;gap:12px}.ba-dashboard-header>button:last-child{justify-self:start}.ba-dashboard-columns{grid-template-columns:1fr}#ba-analytics-dashboard{padding:14px}.ba-dashboard-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(prefers-reduced-motion:reduce){#ba-analytics-dashboard *,#${this.panelId} *{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
   `;
   }

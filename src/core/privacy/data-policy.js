@@ -1,6 +1,7 @@
 export const ANALYTICS_SCHEMA_VERSION = 1;
-// Compact local fingerprints preserve idempotency across larger histories.
-export const MAX_DEDUPE_KEYS_PER_CONVERSATION = 250_000;
+// Keep every fingerprint so revisiting old virtualized rows never increments
+// message counts again. The local data file therefore grows with collected history.
+export const MAX_DEDUPE_KEYS_PER_CONVERSATION = Number.MAX_SAFE_INTEGER;
 
 /** Analytics storage deliberately excludes message bodies and raw message IDs. */
 export function fingerprintMessageId(messageId) {
@@ -23,6 +24,8 @@ export function sanitizeAnalyticsRecord(record) {
     messageId: String(messageId),
     authorId: String(authorId),
     authorName: typeof record.authorName === "string" ? record.authorName.slice(0, 100) : "",
+    authorUsername: typeof record.authorUsername === "string" ? record.authorUsername.slice(0, 100) : "",
+    avatarUrl: typeof record.avatarUrl === "string" && /^https:\/\/[^\s]{1,500}$/.test(record.avatarUrl) ? record.avatarUrl : "",
     timestamp: Number.isFinite(timestamp) ? timestamp : null,
     isSelf: typeof record.isSelf === "boolean" ? record.isSelf : null,
   };

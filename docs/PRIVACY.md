@@ -9,12 +9,12 @@ Collection starts only for the conversation selected in Discord. Barkly Access p
 The BetterDiscord Data API stores:
 
 - Conversation IDs required to associate and clear conversation statistics.
-- Author IDs and display names needed to rank and identify people in the dashboard.
+- Author IDs, visible display names, and usernames when the rendered UI exposes them, needed to identify contacts in Frequent and the dashboard.
 - Aggregate sent, received, unknown, daily, and hourly counts.
-- Exclusion preferences, collection state, and coverage timestamps.
-- Up to 250,000 non-cryptographic fingerprints of message IDs per conversation for deduplication.
+- Exclusion preferences, collection state, coverage timestamps, and the captured conversation route used for a same-app shortcut in Frequent.
+- Non-cryptographic fingerprints of all collected message IDs for deduplication. The list grows with collected history.
 
-The fingerprint is a deterministic 64-bit FNV-1a hash, not a cryptographic anonymizer. It is pseudonymous metadata and may be guessable. Fingerprints are bounded and older entries are discarded first. This means a previously seen message older than the window may be counted again if it reappears. Raw message IDs are not kept in persistent analytics.
+The fingerprint is a deterministic 64-bit FNV-1a hash, not a cryptographic anonymizer. It is pseudonymous metadata and may be guessable. Fingerprints are retained for every unique collected message so older messages are not recounted when the UI virtualizes them. Storage grows with history. Raw message IDs are not kept in persistent analytics.
 
 Raw message bodies, attachments, reactions, and embeds are not read into analytics records or persisted. Source records exist transiently while each visible batch is normalized and discarded. The user can clear one conversation or all analytics from Stats. Disabling the plugin stops collection but preserves aggregates so they remain available after restart.
 

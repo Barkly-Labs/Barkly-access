@@ -1,18 +1,21 @@
 # Barkly Access — History and Analytics Core
 
-The history core normalizes rendered message metadata. Collection, aggregate storage, and statistics are in separate modules. They do not need message bodies.
+The history core normalizes rendered message metadata. Collection, aggregate storage, contact indexing, and statistics are separate modules. Message bodies are not needed.
 
 ## Files
-- `src/core/history/aggregation-engine.js`: aggregation, bounded duplicate tracking, reset and stats.
-- `src/core/history/normalizer.js`: strips bodies and normalizes message metadata.
-- `tests/aggregation-engine.test.mjs`: Node built-in test suite.
-- `src/core/collection/collection-coordinator.js`: selected-conversation collection lifecycle.
-- `src/core/storage/historical-store.js`: aggregate-only persistence and bounded duplicate fingerprints.
-- `src/core/analytics/`: UTC summaries and time-series grouping.
+
+- `aggregation-engine.js`: legacy in-memory count helper, tested independently.
+- `normalizer.js`: converts supported source fields to minimal message metadata.
+- `../collection/collection-coordinator.js`: selected-conversation collection lifecycle and batch persistence.
+- `../storage/historical-store.js`: aggregate persistence and persistent message-ID fingerprints.
+- `../frequent/contact-index.js`: derives stable person/conversation contacts from the same historical store.
+- `../analytics/`: UTC summaries and time-series grouping.
+- `../../integrations/betterdiscord/conversation-selection.js`: validates same-app conversation routes.
 
 ## Run tests
-```bash
-node --test tests/aggregation-engine.test.mjs
+
+```sh
+npm test
 ```
 
-The persisted fingerprint list is bounded to 20,000 message IDs per conversation. Older entries can be counted again after eviction. The current BetterDiscord source requests older messages through the selected conversation's visible UI; it cannot verify complete coverage.
+The store retains one compact fingerprint for every distinct collected message ID, so overlapping or repeated scans do not inflate counts after reload. Storage grows with collected history. The BetterDiscord source uses only rendered UI records and cannot certify that Discord has exposed the full conversation history.

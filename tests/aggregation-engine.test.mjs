@@ -33,7 +33,7 @@ test("normalizer omits message body", () => {
     timestamp: 123,
   }]);
   assert.deepEqual(normalized, [{
-    messageId: "1", authorId: "a", authorName: "", conversationId: "c", timestamp: 123000, isSelf: null,
+    messageId: "1", authorId: "a", authorName: "", authorUsername: "", conversationId: "c", timestamp: 123000, isSelf: null,
   }]);
   assert.equal("content" in normalized[0], false);
   assert.equal("attachments" in normalized[0], false);
@@ -57,7 +57,7 @@ test("normalizer drops malformed records and accepts common export field names",
     getTimestamp: m => m.created_at,
   });
   assert.deepEqual(normalized, [{
-    messageId: "m1", authorId: "u1", authorName: "", conversationId: "c1", timestamp: null, isSelf: null,
+    messageId: "m1", authorId: "u1", authorName: "", authorUsername: "", conversationId: "c1", timestamp: null, isSelf: null,
   }]);
   assert.equal(JSON.stringify(normalized).includes("secret"), false);
 });

@@ -4,6 +4,7 @@ import {
   fingerprintMessageId,
   sanitizeAnalyticsRecord,
 } from "../privacy/data-policy.js";
+import { INITIAL_COLLECTION_STATES } from "../collection/collection-state.js";
 
 const emptyState = () => ({ version: ANALYTICS_SCHEMA_VERSION, conversations: {} });
 
@@ -33,6 +34,7 @@ export class HistoricalStore {
         if (!person || typeof person !== "object") continue;
         people[String(personId)] = {
           authorId: String(personId), name: safeString(person.name, 100) || String(personId),
+          username: safeString(person.username, 100), avatarUrl: safeAvatar(person.avatarUrl),
           sent: count(person.sent), received: count(person.received), unknown: count(person.unknown),
           total: count(person.total), firstTimestamp: finiteOrNull(person.firstTimestamp), lastTimestamp: finiteOrNull(person.lastTimestamp),
           daily: countMap(person.daily), dailySent: countMap(person.dailySent), dailyReceived: countMap(person.dailyReceived), dailyUnknown: countMap(person.dailyUnknown),
@@ -41,6 +43,8 @@ export class HistoricalStore {
       }
       conversations[String(id)] = {
         conversationId: String(id),
+        navigationPath: validConversationPath(raw.navigationPath, id),
+        collection: sanitizeCollection(raw.collection),
         status: validStatus(raw.status) ? raw.status : "partial",
         totals: { sent: count(raw.totals?.sent), received: count(raw.totals?.received), unknown: count(raw.totals?.unknown) },
         people,
@@ -77,6 +81,8 @@ export class HistoricalStore {
     entry.updatedAt = this.now();
     if (details.error) entry.error = String(details.error).slice(0, 240);
     if (details.coverage) entry.coverage = { ...entry.coverage, ...details.coverage };
+    if (details.navigationPath) entry.navigationPath = validConversationPath(details.navigationPath, id) || entry.navigationPath || null;
+    if (details.collection) entry.collection = sanitizeCollection({ ...entry.collection, ...details.collection });
     state.conversations[id] = entry;
     this.writeState(state);
     return structuredClone(entry);
@@ -128,6 +134,17 @@ export class HistoricalStore {
     this.writeState(state);
   }
 
+  markCollection(conversationId, changes = {}) {
+    const state = this.snapshot();
+    const id = String(conversationId);
+    const entry = state.conversations[id] || this.newConversation(id);
+    entry.collection = sanitizeCollection({ ...entry.collection, ...changes });
+    entry.updatedAt = this.now();
+    state.conversations[id] = entry;
+    this.writeState(state);
+    return structuredClone(entry.collection);
+  }
+
   setAuthorExcluded(conversationId, authorId, excluded) {
     const state = this.snapshot();
     const entry = state.conversations[String(conversationId)];
@@ -150,6 +167,8 @@ export class HistoricalStore {
   newConversation(id) {
     return {
       conversationId: id,
+      navigationPath: null,
+      collection: sanitizeCollection(null),
       status: "ready",
       totals: { sent: 0, received: 0, unknown: 0 },
       people: {},
@@ -171,11 +190,13 @@ export class HistoricalStore {
   addRecord(entry, record) {
     const authorId = record.authorId;
     const person = entry.people[authorId] || {
-      authorId, name: record.authorName || authorId, sent: 0, received: 0, unknown: 0, total: 0, firstTimestamp: null, lastTimestamp: null,
+      authorId, name: record.authorName || authorId, username: record.authorUsername || "", avatarUrl: "", sent: 0, received: 0, unknown: 0, total: 0, firstTimestamp: null, lastTimestamp: null,
       daily: {}, dailySent: {}, dailyReceived: {}, dailyUnknown: {}, hourly: Array(24).fill(0),
       hourlySent: Array(24).fill(0), hourlyReceived: Array(24).fill(0), hourlyUnknown: Array(24).fill(0),
     };
     if (record.authorName) person.name = record.authorName;
+    if (record.authorUsername) person.username = record.authorUsername;
+    if (record.avatarUrl) person.avatarUrl = record.avatarUrl;
     const direction = record.isSelf === true ? "sent" : record.isSelf === false ? "received" : "unknown";
     person[direction]++;
     person.total++;
@@ -207,6 +228,30 @@ export class HistoricalStore {
 const count = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 const finiteOrNull = value => Number.isFinite(Number(value)) && value != null ? Number(value) : null;
 const safeString = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
+const safeAvatar = value => typeof value === "string" && /^https:\/\/[^\s]{1,500}$/.test(value) ? value : "";
+const validConversationPath = (path, conversationId) => {
+  if (typeof path !== "string") return null;
+  const match = path.match(/^\/channels\/(?:@me|\d+)\/(\d+)\/?$/);
+  return match && match[1] === String(conversationId) ? path.replace(/\/$/, "") : null;
+};
+const sanitizeCollection = raw => {
+  const state = INITIAL_COLLECTION_STATES.includes(raw?.state) ? raw.state : "never_collected";
+  const operation = ["idle", "collecting", "completed", "incomplete", "interrupted", "failed"].includes(raw?.lastOperationStatus)
+    ? raw.lastOperationStatus : "idle";
+  return {
+    state,
+    initialStartedAt: finiteOrNull(raw?.initialStartedAt),
+    initialCompletedAt: finiteOrNull(raw?.initialCompletedAt),
+    lastCollectionAt: finiteOrNull(raw?.lastCollectionAt),
+    lastSuccessfulUpdateAt: finiteOrNull(raw?.lastSuccessfulUpdateAt),
+    lastOperationStatus: operation,
+    lastMode: raw?.lastMode === "incremental" ? "incremental" : raw?.lastMode === "initial" ? "initial" : null,
+    attempts: count(raw?.attempts),
+    interrupted: raw?.interrupted === true,
+    stopReason: safeString(raw?.stopReason, 80),
+    error: safeString(raw?.error, 240),
+  };
+};
 const stringArray = (value, max) => Array.isArray(value) ? value.filter(x => typeof x === "string").slice(-max) : [];
 const countMap = value => value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([key]) => /^\d{4}-\d{2}-\d{2}$/.test(key)).map(([key, n]) => [key, count(n)])) : {};
 const countArray = value => Array.isArray(value) ? Array.from({ length: 24 }, (_, i) => count(value[i])) : Array(24).fill(0);

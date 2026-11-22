@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { HistoricalStore } from "../src/core/storage/historical-store.js";
 import { summarizeAnalytics } from "../src/core/analytics/statistics-engine.js";
 import { CollectionCoordinator } from "../src/core/collection/collection-coordinator.js";
+import { collectionModeFor } from "../src/core/collection/collection-state.js";
 import { RenderedHistoryAdapter } from "../src/integrations/betterdiscord/rendered-history-adapter.js";
 import { getSelectedConversationId } from "../src/integrations/betterdiscord/conversation-selection.js";
 import { groupDailyCounts, busiestHour } from "../src/core/analytics/time-series.js";
@@ -133,6 +134,74 @@ test("multi-batch scans count overlap once, persist run coverage, and remain ide
   assert.equal(restarted.getConversation("c").people.p.total, 2);
 });
 
+test("initial collection completes only at its observable edge and later opens use incremental batches", async () => {
+  let data = null;
+  const save = value => { data = structuredClone(value); };
+  const store = new HistoricalStore({ load: () => data, save });
+  const events = [];
+  let receivedMode;
+  const adapter = {
+    async startScan({ mode }) { receivedMode = mode; },
+    async getNextBatch({ mode }) {
+      return mode === "initial"
+        ? { records: [{ id: "first", author_id: "person" }], done: true, stopReason: "oldest-visible-edge-stable" }
+        : { records: [{ id: "first", author_id: "person" }, { id: "new", author_id: "person" }], done: true, stopReason: "incremental-visible-batch" };
+    },
+    async dispose() {},
+  };
+  const coordinator = new CollectionCoordinator({ adapter, store, onProgress: event => events.push(event) });
+
+  assert.equal(collectionModeFor(store.getConversation("c")?.collection), "initial");
+  const first = await coordinator.collect("c", { mode: "initial" });
+  assert.equal(first.collectionState, "completed");
+  assert.equal(store.getConversation("c").collection.state, "initial_completed");
+  assert.equal(store.getConversation("c").collection.attempts, 1);
+  assert.ok(store.getConversation("c").collection.initialCompletedAt);
+  assert.equal(events[0].phase, "start");
+  assert.equal(events.at(-1).phase, "finish");
+  assert.equal(events.at(-1).collectionState, "completed");
+
+  assert.equal(collectionModeFor(store.getConversation("c").collection), "incremental");
+  const next = await coordinator.collect("c", { mode: "incremental" });
+  assert.equal(receivedMode, "incremental");
+  assert.equal(next.processed, 1);
+  assert.equal(next.duplicates, 1);
+  assert.equal(store.getConversation("c").people.person.total, 2);
+  assert.equal(store.getConversation("c").collection.state, "initial_completed");
+  assert.equal(store.getConversation("c").collection.attempts, 1);
+
+  const reloaded = new HistoricalStore({ load: () => data, save });
+  assert.equal(collectionModeFor(reloaded.getConversation("c").collection), "incremental");
+  assert.equal(reloaded.getConversation("c").people.person.total, 2);
+});
+
+test("incomplete and interrupted initial attempts remain retryable and independent per conversation", async () => {
+  let data = null;
+  const save = value => { data = structuredClone(value); };
+  const store = new HistoricalStore({ load: () => data, save });
+  let stopReason = "batch-limit";
+  const adapter = {
+    async startScan() {},
+    async getNextBatch() { return { records: [{ id: "kept", author_id: "person" }], done: true, stopReason }; },
+  };
+  const coordinator = new CollectionCoordinator({ adapter, store });
+  const incomplete = await coordinator.collect("a", { mode: "initial" });
+  assert.equal(incomplete.collectionState, "incomplete");
+  assert.equal(collectionModeFor(store.getConversation("a").collection), "initial");
+  stopReason = "oldest-visible-edge-stable";
+  const retried = await coordinator.collect("a", { mode: "initial" });
+  assert.equal(retried.processed, 0);
+  assert.equal(retried.duplicates, 1);
+  assert.equal(store.getConversation("a").collection.state, "initial_completed");
+  assert.equal(store.getConversation("a").people.person.total, 1);
+
+  const other = await coordinator.collect("b", { mode: "initial" });
+  assert.equal(other.collectionState, "completed");
+  assert.equal(store.getConversation("a").collection.attempts, 2);
+  assert.equal(store.getConversation("b").collection.attempts, 1);
+  assert.notEqual(store.getConversation("a").conversationId, store.getConversation("b").conversationId);
+});
+
 test("rendered adapter reads only the selected conversation's rendered message metadata", async () => {
   const row = {
     id: "chat-messages-123456789012345678",
@@ -149,11 +218,13 @@ test("rendered adapter reads only the selected conversation's rendered message m
   const adapter = new RenderedHistoryAdapter({
     getSelectedConversation: () => "456789012345678901",
     getCurrentUserId: () => "111111111111111111",
+    getConversationPath: () => "/channels/123456789012345678/456789012345678901",
     getDocument: () => root.document,
     maxBatches: 1,
     wait: async () => {},
   });
-  await adapter.startScan({ conversationId: "456789012345678901" });
+  const scanContext = await adapter.startScan({ conversationId: "456789012345678901" });
+  assert.equal(scanContext.navigationPath, "/channels/123456789012345678/456789012345678901");
   const batch = await adapter.getNextBatch({ conversationId: "456789012345678901" });
   assert.equal(batch.records.length, 1);
   assert.equal(batch.records[0].authorId, "987654321098765432");
@@ -189,6 +260,26 @@ test("rendered adapter scrolls the selected message list to load older rows then
   await adapter.dispose({ conversationId: "456789012345678901" });
   assert.equal(dom.scroller.scrollTop, 600);
   assert.equal(adapter.scan, null);
+});
+
+test("rendered adapter incremental refresh reads visible rows without scrolling or waiting", async () => {
+  const rows = [{
+    id: "chat-messages-123456789012345678", getAttribute: () => null,
+    querySelector: selector => selector.includes("/users/") ? { getAttribute: () => "/users/987654321098765432" } : null,
+  }];
+  const dom = mockMessageRoot(() => rows, { initialTop: 400 });
+  let waits = 0;
+  const adapter = new RenderedHistoryAdapter({
+    getSelectedConversation: () => "456789012345678901", getCurrentUserId: () => null,
+    getDocument: () => dom.document, wait: async () => { waits++; },
+  });
+  await adapter.startScan({ conversationId: "456789012345678901", mode: "incremental" });
+  const batch = await adapter.getNextBatch({ conversationId: "456789012345678901" });
+  assert.equal(batch.done, true);
+  assert.equal(batch.stopReason, "incremental-visible-batch");
+  assert.equal(batch.records.length, 1);
+  assert.equal(dom.scroller.scrollTop, 400);
+  assert.equal(waits, 0);
 });
 
 function mockMessageRoot(getRows, { initialTop = 0 } = {}) {
