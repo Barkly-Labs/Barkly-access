@@ -25,3 +25,7 @@ Accessibility UI / Prototype
 ## Module interface (concept)
 
 Modules should declare their name, settings, data requirements, and whether they can operate without integration data. Keep modules isolated and easy to disable.
+
+## Source layout
+
+Platform-specific integrations live beneath `src/integrations/<platform>/` to keep them within the source tree and isolated from platform-independent assets and logic. The current BetterDiscord experiment lives in `src/integrations/betterdiscord/`.

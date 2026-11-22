@@ -6,7 +6,7 @@
 
 ## Project status
 
-Early concept / prototype. This repository currently focuses on product principles, a platform-independent UX prototype, and research before any Discord integration. Discord client modifications may violate Discord's Terms; integration choices must be reviewed against current policies and supported interfaces before implementation.
+Early concept / prototype with an experimental BetterDiscord adapter under `src/integrations/betterdiscord/`. Discord client modifications may violate Discord's Terms and may risk account action; the adapter is experimental and unsupported.
 
 ## Initial MVP: Catch Me Up
 
@@ -37,7 +37,7 @@ Early concept / prototype. This repository currently focuses on product principl
 
 ## Development
 
-No runtime dependencies in the initial scaffold. Start by reviewing `docs/ROADMAP.md` and `docs/ARCHITECTURE.md`.
+The initial prototype and plugin have no project-managed runtime dependencies. Review `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, and `docs/PAW-HC-REVIEW.md`. The BetterDiscord adapter is located in `src/integrations/betterdiscord/`.
 
 ## License
 

@@ -30,3 +30,9 @@
 - Reading assist
 - Navigation assist
 - Profile manager
+
+## BetterDiscord experiment
+
+- [x] Place experimental Focus Mode adapter in `src/integrations/betterdiscord/`.
+- [ ] Validate selector behavior in a test environment and document limitations.
+- [ ] Review compatibility, policy, and PAW-HC concerns before expanding features.
